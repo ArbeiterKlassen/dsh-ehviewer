@@ -310,6 +310,9 @@ node packages/panel/server.mjs --port 7712
 
 ## 常见坑
 
+- **下载目录会对账**：`dir` 传下载根或直接传这本的目录都行（传目录不会再套一层）。下之前会先找同名的旧目录——老版本留在根上的、换账号前留在别的桶里的——整目录 rename 到 `<root>/<account>/<gid>-<token>`；两边都有就合并，同名同大小当重复删掉，大小不同保留两份并在 `dirWarnings` 里说明。所以「之前下过的本子目录没更新」不会再有：它会被收编到同一个目录，只补缺的页。
+
+
 - **exhentai 必须要有 `igneous`**。只给 `ipb_member_id` + `ipb_pass_hash` 时，exhentai 会 302 回 e-hentai；`eh_cookie_status` 的 `site` 会显示 `e-hentai`，别以为是登录失败。
 - **图片必须带 Referer**。缩略图/大图都按 Referer 防盗链，`eh_thumb` 默认补站点首页；自己写请求时别漏。
 - **GP 归档要先看价格**。`eh_archive action=request` 会真花 GP，先 `action=info` 看清再下单；没 GP 时站点只给 H@H 提示。
@@ -340,7 +343,7 @@ node packages/panel/server.mjs --port 7712
 - 二进制通道：`client.getBinary()`（`http.js` 已内置），`eh_thumb` / 下载共用同一条代理链路
 - 收藏夹：`eh_favorites(cat=0)` 列表 / `query` 站内搜（`takoro` 命中 1）/ `cache=true` 落缓存 → `eh_fav_local` 断网搜（`pixiv` 命中 3）
 - 本地库：整本下载落到 `<downloadDir>/exh-<memberId>/<gid>-<token>/`（实测一本 11 张，meta 含 30 个 tag），`eh_local_search` 支持 `female:big breasts`（不加引号也能并）、`f:big breasts`、`character:astra yao`、`/pixiv|短篇/`
-- 全套测试：smoke 46/46、`_t_core` / `_t_local` 56 / `_t_fav` 38 / `_t_dl` 78 / `_t_dl2` 58 / `_t_tags` 36 / `_t_comments` 11 / `_t_auth2` / `_t_compact` 全绿
+- 全套测试：smoke 46/46、`_t_core` / `_t_local` 56 / `_t_adopt` 13 / `_t_fav` 38 / `_t_dl` 78 / `_t_dl2` 58 / `_t_tags` 36 / `_t_comments` 11 / `_t_auth2` / `_t_compact` 全绿
 
 ---
 
