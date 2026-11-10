@@ -1,0 +1,10 @@
+node_modules/
+downloads/
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.*
+coverage/
+*.tgz
+panel/data/

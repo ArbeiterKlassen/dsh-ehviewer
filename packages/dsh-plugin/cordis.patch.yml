@@ -1,0 +1,10 @@
+# dsh-eh-panel bundle patch
+#
+# 往宿主插入一个极小插件行：启动时探活 127.0.0.1:7712，没在听就用 node 把面板脚本拉起来。
+# 配置项都可在 profile 的 cordis.patch.yml 里覆盖同 id 行的 config。
+# script 留空 = 自动从依赖 dsh-ehviewer-panel 解析；要指到自己的副本就填绝对路径。
+- insert:
+    - id: dsh-ehviewer-plugin
+      name: 'dsh-ehviewer-plugin'
+      config:
+        url: 'http://127.0.0.1:7712/'

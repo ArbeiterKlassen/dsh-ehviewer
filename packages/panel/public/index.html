@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>DSH-EH · 本地面板</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<aside class="side">
+  <div class="brand"><b>DSH-EH</b><span>本地面板</span></div>
+  <nav id="nav">
+    <a href="/view" data-nav="view" data-spa><i></i>看过</a>
+    <a href="/download" data-nav="download" data-spa><i></i>下载</a>
+    <a href="/notes" data-nav="notes" data-spa><i></i>笔记</a>
+    <a href="/library" data-nav="library" data-spa><i></i>本地库</a>
+  </nav>
+  <div class="side-foot" id="status">连接中…</div>
+</aside>
+<div class="main">
+  <header class="topbar">
+    <div class="crumb" id="crumb">看过</div>
+    <label class="search">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"></circle><path d="M10.5 10.5 14 14"></path></svg>
+      <input id="q" type="search" placeholder="搜标题 / gid / token…" autocomplete="off" spellcheck="false">
+    </label>
+  </header>
+  <main id="app"></main>
+</div>
+<div class="toast" id="toast"></div>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

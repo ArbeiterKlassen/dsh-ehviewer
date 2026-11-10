@@ -1,0 +1,18 @@
+{
+  "name": "dsh-ehviewer-plugin",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "DeepSeek Harness sidebar entry that opens the dsh-ehviewer panel inside the app",
+  "license": "MIT",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js"
+  },
+  "files": ["lib", "cordis.patch.yml", "README.md"],
+  "dsh": {
+    "profile": { "bundles": ["dsh-ehviewer-plugin"] },
+    "client": "./lib/client.js"
+  },
+  "dependencies": { "dsh-ehviewer-panel": "^1.0.0" }
+}

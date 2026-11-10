@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "aliases": {
+    "中文": "language:chinese",
+    "汉语": "language:chinese",
+    "汉化": "language:translated",
+    "汉化版": "language:translated",
+    "英文": "language:english",
+    "日文": "language:japanese",
+    "韩文": "language:korean",
+    "生肉": "language:japanese",
+    "无码": "other:uncensored",
+    "无修正": "other:uncensored",
+    "有码": "other:mosaic censorship",
+    "打码": "other:mosaic censorship",
+    "全彩": "other:full color",
+    "单行本": "other:tankoubon",
+    "合集": "other:compilation",
+    "动画": "other:animated",
+    "AI生成": "other:ai generated",
+    "调教": "female:bdsm",
+    "NTR": "female:netorare",
+    "寝取": "female:netorare",
+    "巨乳": "female:big breasts",
+    "贫乳": "female:small breasts",
+    "黑丝": "female:pantyhose",
+    "白丝": "female:stockings",
+    "女仆": "female:maid",
+    "眼镜": "female:glasses",
+    "熟女": "female:milf",
+    "萝莉": "female:lolicon"
+  }
+}
