@@ -1,4 +1,4 @@
-# 给 agent 的调用示例
+# 给 agent 的调用示例（eh-mcp 0.2）
 
 所有示例都是真机跑出来的（走 `socks5://127.0.0.1:10808`，登录态 exhentai）。
 「≈N tok」是按 `中文字数 + 其他字符/3.6` 粗估的，用来横向比较，不是账单。
@@ -223,3 +223,16 @@ gid	token	title	pages	category
 - `eh_open` 的直链有 `keystamp`，几分钟后就失效，别存着以后用。
 - 排行榜在 EXH 会话里走 EH 主机，返回的 `url` 是 `e-hentai.org`，属正常。
 - 所有工具的 `warnings` 只在非空时出现，别按固定位置取。
+
+## 按分类决定读多少页
+
+`category` 现在在所有列表、详情、下载返回、历史与本地库里都有。拿到它就别再一刀切地整本翻：
+
+- `Doujinshi` / `Manga` → 连续叙事，逐页读值得。
+- `Artist CG` / `Game CG` / `Image Set` → 差分画廊，抽 1、中间、最后各 2~3 页就够（`eh_pages {from,to}`）。
+- `Cosplay` / `Asian Porn` → 照片，跳页。
+- `Misc` → AI 生成居多，默认可跳过。
+- `Non-H` → 与成人向任务无关时直接跳过。
+- `Western` / `Unknown` → 看标题和页数再定。
+
+判断「是不是同一套构图」比数页数更省：先取 3 页，如果人物/机位几乎一致，后面大概率也是差分。

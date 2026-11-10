@@ -69,7 +69,7 @@ console.log('[1] 字段裁剪');
   check(body?.hasMore === true, 'hasMore 正确（30 条里只回 10）');
   check(body?.nextOffset === 10, 'nextOffset=10', String(body?.nextOffset));
   const keys = Object.keys(body.items[1]).sort().join(',');
-  check(keys === 'gid,pages,title,token', `默认字段 = gid,token,title,pages（实际 ${keys}）`);
+  check(keys === 'category,gid,pages,title,token', `默认字段 = gid,token,title,pages,category（实际 ${keys}）`);
   check(!('pages' in body.items[0]), '本身没有 pages 的条目不会补 null');
   check(!('url' in body.items[0]) && !('thumb' in body.items[0]) && !('tagsPreview' in body.items[0]),
     '默认不带 url / thumb / tagsPreview');
@@ -86,13 +86,13 @@ console.log('\n[2] tsv 格式');
 {
   const res = packList('eh_search', { site: 'e-hentai', items: LIST.slice(0, 3), format: 'tsv' });
   const lines = textOf(res).split('\n');
-  check(lines[0] === 'gid\ttoken\ttitle\tpages', '首行是表头', lines[0]);
+  check(lines[0] === 'gid\ttoken\ttitle\tpages\tcategory', '首行是表头', lines[0]);
   check(lines.length === 4, `一行一条（3 条 + 表头，实际 ${lines.length} 行）`);
-  check(lines[1].split('\t').length === 4, '列数与表头一致');
+  check(lines[1].split('\t').length === 5, '列数与表头一致');
 }
 {
   const res = packList('eh_search', { items: [], format: 'tsv' });
-  check(textOf(res) === 'gid\ttoken\ttitle\tpages', '空列表只回表头', textOf(res));
+  check(textOf(res) === 'gid\ttoken\ttitle\tpages\tcategory', '空列表只回表头', textOf(res));
 }
 
 // ③ limit / offset

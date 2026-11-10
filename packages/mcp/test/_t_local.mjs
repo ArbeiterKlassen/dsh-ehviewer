@@ -180,7 +180,7 @@ check(
   '搜索结果字段精简',
   (() => {
     const one = q('tentacle')[0];
-    return json(Object.keys(one).sort()) === json(['dir', 'gid', 'pages', 'tags', 'title', 'token']);
+    return json(Object.keys(one).sort()) === json(['category', 'dir', 'gid', 'pages', 'tags', 'title', 'token']);
   })(),
   json(Object.keys(q('tentacle')[0]).sort()),
 );

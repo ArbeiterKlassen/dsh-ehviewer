@@ -1,19 +1,10 @@
-# dsh-ehviewer
+# eh-mcp
 
-给 agent 用的 e-hentai / exhentai 工具集：一个 MCP server + 一块本地浏览面板 + 一个 DeepSeek Harness 侧边栏入口。
+给 agent 用的 e-hentai / exhentai MCP server（stdio，纯 ESM，无构建）。
 
-- **MCP server**（`dsh-ehviewer`）：46 个工具，覆盖搜索 / 详情 / 看图 / 整本下载 / 收藏 / 订阅 / 评论区 / 笔记 / 本地库检索。
-- **面板**（`dsh-ehviewer-panel`）：`127.0.0.1:7712` 上的本地只读面板，显示「agent 看过什么、下过什么、写了什么笔记」，自带阅读器。
-- **DSH 插件**（`dsh-ehviewer-plugin`）：在 DeepSeek Harness 侧边栏加一个 **DSH-EH** 入口，点开就在窗口内嵌面板（iframe），启动时顺手把面板服务拉起来并做看护。
+工具面三层：契约里定死的 25 个核心工具 + 从 [Ehviewer_CN_SXJ](https://github.com/xiaojieonly/Ehviewer_CN_SXJ) 真实实现里移植的 9 个扩展（含 `eh_download_cancel`）+ 5 个一步到位的复合工具（`eh_find` / `eh_open` / `eh_read` / `eh_quick` / `eh_image_search`），共 **39** 个。
 
-数据全部落在本机（`~/.dsh-eh/` 与下载目录），没有远端服务，面板只绑回环地址。
-
-```
-packages/
-  mcp/         MCP server（stdio，纯 ESM，无构建）
-  panel/       本地面板（node 内置模块，零第三方依赖）+ 在线读图后端
-  dsh-plugin/  DeepSeek Harness bundle：侧边栏行 + 主题桥 + 进程看护
-```
+输出默认按 agent 习惯压缩（默认字段集、`limit=10`、`format="tsv"` 可选），真实调用示例与 token 数见 [docs/agent-usage.md](docs/agent-usage.md)。
 
 ---
 
@@ -90,6 +81,28 @@ DSH 里点侧边栏的 **DSH-EH** 就能在窗口内打开它（`dsh-eh-panel` �
 配色跟着 DSH 本体走：内嵌时由 `dsh-eh-panel` 把 8 个颜色变量（`--eh-bg` / `-bg-elev` / `-bg-hover` / `-border` / `-text` / `-text-dim` / `-accent` / `-accent-dim`）从 DSH 的真实 token 里取出来 postMessage 下发，`mode` 取自 `body[data-ds-dark-theme]`；切主题即时生效。单独用浏览器打开时按 `prefers-color-scheme` 自己判断。
 阅读器在面板里，不再跳浏览器：本地有下载就优先读本地文件，没有就走在线（`panel/online.mjs` 复用同一份 config / cookie / 代理 / 解析器，20 页一个窗口懒加载）。← → 翻页、Home/End 首尾、Esc 回详情、宽屏可双页；顶部只有「在源站打开 ↗」一个出口会交给系统浏览器。
 
+
+### 分类与阅读策略（agent 必读）
+
+站点只有 11 个分类，`category` 字段在搜索、列表、`eh_gallery`、`eh_download`、历史、本地库搜索里都会带出来，值就是站点原样写法：
+
+| 分类 | 内容特点 | 建议的读法 |
+| --- | --- | --- |
+| `Doujinshi` | 同人志，连续分镜叙事 | **逐页读**（`eh_pages` 全量 or 分段 20） |
+| `Manga` | 商业志/连载，同样连续 | **逐页读** |
+| `Artist CG` | 画师图集，大量近似差分 | **跳页读**：先看 1、中间、最后，再抽查 |
+| `Game CG` | 游戏 CG 抽出，差分多 | **跳页读** |
+| `Image Set` | 图集/合集，顺序常无叙事 | **跳页读** |
+| `Cosplay` | 真人照片 | 跳页读，除非要找特定造型 |
+| `Asian Porn` | 真人照片/影像截图 | 跳页读 |
+| `Western` | 欧美同人/图集，质量参差 | 先看标题与页数，再决定逐页或跳页 |
+| `Non-H` | 非成人内容 | 非本任务目标时直接跳过 |
+| `Misc` | **AI 生成居多**、杂项 | 默认可跳过，除非标题明确相关 |
+| `Unknown` | 站点没标 | 看标题/页数判断 |
+
+跳页读的具体做法：`eh_pages { gid, token, from: 1, to: 3 }` 看开头，再取中间与结尾各 2~3 页；确认是同一套构图就停，别为了一张差分把整本翻完。
+
+`eh_download` 返回里也带 `category`，历史记录同样有，所以「下过什么、属于哪类」是可以离线检索的。
 
 ### 评论与笔记
 
@@ -171,20 +184,16 @@ minRating→f_sr+f_srdd(1..5)   pageFrom/pageTo→f_sp+f_spf/f_spt
 
 ## 安装
 
-要求 Node ≥ 20（实测 v23.10.0）。全程纯 ESM，没有构建步骤。
-
 ```bash
-git clone <repo> && cd dsh-ehviewer
-npm install                 # workspaces 一次装三个包
-npm test                    # 离线测试（不联网，CI 也跑这套）
+cd D:/DSHQQ/eh-mcp
+npm install          # 依赖已锁在 package-lock.json
+node test/smoke.mjs       # 离线冒烟：39/39 工具 + URL 构造 + 过滤规则往返
+node test/_t_compact.mjs  # 离线：字段裁剪 / tsv / limit·offset / 空值省略 / 复合工具
 ```
 
-单独用 MCP（不装面板/插件也行）：
+依赖：`@modelcontextprotocol/sdk`、`cheerio`、`undici`、`socks-proxy-agent`。
 
-```bash
-node packages/mcp/src/index.js     # stdio，等 MCP 客户端来连
-npm run smoke                      # 46/46 工具注册 + URL 构造 + 过滤规则往返
-```
+要求 Node ≥ 20（实测 v23.10.0），项目是纯 ESM（`"type": "module"`），没有 TS 构建步骤。
 
 ---
 
@@ -246,45 +255,20 @@ eh_cookie_set { cookies: { ipb_member_id: "xxx", ipb_pass_hash: "yyy", igneous: 
 
 ---
 
-## 在 MCP 客户端里注册
-
-以 DeepSeek Harness 的 MCP 连接器为例：
+## 在 DSH 里注册
 
 ```jsonc
-{
-  "name": "ehentai",
+mcp_connector_configure {
+  "name": "eh-mcp",
   "transport": "stdio",
   "command": "node",
-  "args": ["<repo>/packages/mcp/src/index.js"],
-  "cwd": "<repo>"
+  "args": ["D:/DSHQQ/eh-mcp/src/index.js"]
 }
 ```
 
-装成全局包之后也可以直接写 `command: "dsh-ehviewer"`：
+注册后工具名会带前缀（如 `mcp__eh-mcp__eh_search`），直接对 agent 说「搜 xxx 的本子」就会命中。
 
-```bash
-npm i -g dsh-ehviewer
-```
-
-工具名会带客户端前缀（如 `mcp__ehentai__eh_search`）。启动时 stderr 打一行
-`[eh-mcp] v1.0.0 已启动 · 工具 46/46 个`，stdout 只走 MCP 协议。
-
-## 面板与 DSH 插件
-
-```bash
-node packages/panel/server.mjs              # 默认 7712，被占自动顺延；--port/--data/--root 可改
-node packages/panel/server.mjs --port 7712
-```
-
-浏览器打开 `http://127.0.0.1:7712/` 就能看：看过 / 下载 / 笔记 / 本地库，点进一本直接读图（本地优先，没下载过走在线，20 页一个窗口懒加载）。
-
-接线进 DeepSeek Harness（侧边栏多一行 **DSH-EH**，点开是窗口内嵌面板）：
-
-1. 把 `packages/dsh-plugin` 放进 profile 的 `node_modules`（或 `npm i -D dsh-ehviewer-plugin`），
-2. profile 的 `package.json` 里 `dsh.profile.bundles` 追加 `dsh-ehviewer-plugin`，
-3. 重启 DSH。之后每次启动都会探活 7712，没起就自己拉；面板挂了 60 秒内自动重启，上一轮遗留的旧进程会被认出来收掉。
-
-配色跟着 DSH 走：深/浅色由宿主 token 通过 `postMessage` 下发（`--eh-bg` / `-text` / `-accent` 等 8 个变量），单独用浏览器打开时按 `prefers-color-scheme` 自己判断。
+启动时 stderr 会打一行 `[eh-mcp] v0.2.0 已启动 · 工具 39/39 个 · node v23.10.0`，以及任何缺失模块的警告。stdout 只走 MCP 协议，不掺日志。
 
 ---
 
@@ -309,9 +293,6 @@ node packages/panel/server.mjs --port 7712
 ---
 
 ## 常见坑
-
-- **下载目录会对账**：`dir` 传下载根或直接传这本的目录都行（传目录不会再套一层）。下之前会先找同名的旧目录——老版本留在根上的、换账号前留在别的桶里的——整目录 rename 到 `<root>/<account>/<gid>-<token>`；两边都有就合并，同名同大小当重复删掉，大小不同保留两份并在 `dirWarnings` 里说明。所以「之前下过的本子目录没更新」不会再有：它会被收编到同一个目录，只补缺的页。
-
 
 - **exhentai 必须要有 `igneous`**。只给 `ipb_member_id` + `ipb_pass_hash` 时，exhentai 会 302 回 e-hentai；`eh_cookie_status` 的 `site` 会显示 `e-hentai`，别以为是登录失败。
 - **图片必须带 Referer**。缩略图/大图都按 Referer 防盗链，`eh_thumb` 默认补站点首页；自己写请求时别漏。
@@ -342,17 +323,5 @@ node packages/panel/server.mjs --port 7712
 - `eh_toplists(tl=all)` 37 条、`eh_popular` 71 条、`eh_thumb` 返回 `image/webp`
 - 二进制通道：`client.getBinary()`（`http.js` 已内置），`eh_thumb` / 下载共用同一条代理链路
 - 收藏夹：`eh_favorites(cat=0)` 列表 / `query` 站内搜（`takoro` 命中 1）/ `cache=true` 落缓存 → `eh_fav_local` 断网搜（`pixiv` 命中 3）
-- 本地库：整本下载落到 `<downloadDir>/exh-<memberId>/<gid>-<token>/`（实测一本 11 张，meta 含 30 个 tag），`eh_local_search` 支持 `female:big breasts`（不加引号也能并）、`f:big breasts`、`character:astra yao`、`/pixiv|短篇/`
-- 全套测试：smoke 46/46、`_t_core` / `_t_local` 56 / `_t_adopt` 13 / `_t_fav` 38 / `_t_dl` 78 / `_t_dl2` 58 / `_t_tags` 36 / `_t_comments` 11 / `_t_auth2` / `_t_compact` 全绿
-
----
-
-## 许可
-
-MIT。代码里的站点解析、限速、自愈逻辑都来自公开页面结构，抓取行为请自行遵守站点规则（默认 `rateLimitMs: 800`、并发 4，别调太猛）。
-
-## 相关
-
-- 参考实现：[Ehviewer_CN_SXJ](https://github.com/xiaojieonly/Ehviewer_CN_SXJ)（站点协议与交互）
-- 标签字典：[EhTagTranslation/Database](https://github.com/EhTagTranslation/Database)
-- 宿主：[DeepSeek Harness](https://github.com/deepseek-ai)
+- 本地库：下载落 `C:\Users\deepd\.dsh\eh-downloads\exh-6829692\4317228-0a20c864cf`（11 张，meta 含 30 个 tag），`eh_local_search` 支持 `female:big breasts`（未加引号也能并）、`f:big breasts`、`character:astra yao`、`/pixiv|短篇/`
+- 全套测试：smoke 46/46、`_t_core` / `_t_local` 56 / `_t_fav` 38 / `_t_dl` 78 / `_t_dl2` 58 / `_t_tags` 36 / `_t_comments` 11 / `_t_auth2` / `_t_compact` 全绿

@@ -713,6 +713,7 @@ function compact(entry) {
     token: entry.token ?? null,
     title: entry.title ?? null,
     pages: Number(entry.pages) || 0,
+    category: entry.category ?? null,
     tags: (entry.tags || []).slice(0, 8),
     dir: entry.dir,
   };

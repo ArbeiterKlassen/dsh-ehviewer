@@ -98,13 +98,13 @@ const MAX_TEXT = 300;      // 单字段截断
 const MAX_ERR = 120;       // 错误一句话上限
 
 /** 各工具的默认字段集 */
-const LIST_FIELDS = 'gid,token,title,pages';                    // 通用列表
+const LIST_FIELDS = 'gid,token,title,pages,category';          // 通用列表（category 决定「逐页读还是跳页读」）
 const FIND_FIELDS = 'gid,token,title,pages,category';           // 搜索（多一个 category）
 const GALLERY_FIELDS = 'gid,token,title,category,pages,size,rating,language,favorite,tagsCount';
 const META_FIELDS = 'gid,token,title,pages,rating,size';        // gdata 补全
 const PAGE_FIELDS = 'index,url';                                // 看图页
 const SUB_FIELDS = 'sub,gid,token,title,pages';                 // 订阅新作
-const HIST_FIELDS = 'type,gid,token,title';
+const HIST_FIELDS = 'type,gid,token,title,category';
 
 /** 长字符串截断，超长补省略号 */
 function clip(value) {
@@ -1023,9 +1023,10 @@ export async function buildServer() {
       downloadProgress.set(key, { gid, state, finishedAt: new Date().toISOString(), ...(res || {}) });
       // 顺手记历史（store 没就绪就算了）
       const outDir = path.join(dlRoot, `${gid}-${token}`);
-      try { await mods.store?.addHistory?.({ type: 'download', gid, token, title, dir: outDir }); } catch { /* 可选 */ }
+      try { await mods.store?.addHistory?.({ type: 'download', gid, token, title, category: gal.category || null, dir: outDir }); } catch { /* 可选 */ }
       return ok({
         gid,
+        category: gal.category || null,
         dir: outDir,
         ...(dirWarnings.length ? { dirWarnings } : {}),
         ...(res || {}),
@@ -1148,6 +1149,21 @@ export async function buildServer() {
   }, async ({ limit, type, query, offset, fields, format }) => {
     const list = await need('store').listHistory({ limit: 200, type, query });
     const items = Array.isArray(list) ? list : (list?.items || []);
+    // 老记录可能只有 gid/token：用本地库索引把它们补全（标题、分类），省得 agent 再去问一次
+    try {
+      const idx = need('local-index').loadIndexSync?.();
+      const entries = idx?.entries || [];
+      if (entries.length) {
+        const byGid = new Map(entries.map((e) => [String(e.gid), e]));
+        for (const it of items) {
+          if (!it || it.gid == null) continue;
+          const hitEntry = byGid.get(String(it.gid));
+          if (!hitEntry) continue;
+          if (!it.title && hitEntry.title) it.title = hitEntry.title;
+          if (!it.category && hitEntry.category) it.category = hitEntry.category;
+        }
+      }
+    } catch { /* 索引没建过就算了 */ }
     return packList('eh_history', { items, limit, offset, fields: fields || HIST_FIELDS, format });
   });
 
@@ -1705,7 +1721,7 @@ export async function buildServer() {
       count: (r.items || []).length,
       ...(r.total != null ? { total: r.total } : {}),
       ...(r.items || []).length === (limit ?? LIMIT_DEFAULT) ? { hasMore: true } : {},
-      items: (r.items || []).map((it) => compact(it, fields || 'gid,token,title,pages,dir', format)),
+      items: (r.items || []).map((it) => compact(it, fields || 'gid,token,title,pages,category,dir', format)),
       ...(r.warnings && r.warnings.length ? { warnings: r.warnings.slice(0, 3) } : {}),
     });
   });
