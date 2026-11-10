@@ -964,6 +964,29 @@ export async function buildServer() {
         : cfg?.downloadDir;
     }
     if (!targetDir) throw new Error('没指定下载目录：传 dir，或先 eh_config_set 设 downloadDir。');
+    // 目录对账：dir 可能是根、可能是这本的目录、也可能是老版本（换账号前）留下的位置，
+    // 统一收编到 <root>/<gid>-<token>，避免同一本被下成两份、老目录永远不更新。
+    let dlRoot = targetDir;
+    const dirWarnings = [];
+    try {
+      const dlMod = need('download');
+      if (typeof dlMod.normalizeGalleryTarget === 'function') {
+        const t0 = dlMod.normalizeGalleryTarget({ dir: targetDir, gid, token });
+        let outDir = t0.outDir;
+        if (!t0.wasGalleryDir && typeof dlMod.adoptExistingGalleryDir === 'function') {
+          const ad = await dlMod.adoptExistingGalleryDir({
+            root: t0.root,
+            gid,
+            token,
+            // 老版本 / 换账号前的目录可能在下载根上，也可能在别的账号桶里，都搜一遍
+            searchRoots: [cfg?.downloadDir, t0.root && path.dirname(t0.root)].filter(Boolean),
+          });
+          if (Array.isArray(ad.warnings)) dirWarnings.push(...ad.warnings);
+          if (ad.outDir) outDir = ad.outDir;
+        }
+        dlRoot = path.dirname(outDir);
+      }
+    } catch { /* 对账是加分项，失败照常下 */ }
     const gallery = galleryOf({ gid, token, title });
     // 顺手把详情元数据补齐（1 次请求）：本地库索引靠 title/tags/uploader 才能搜得动，
     // 拿不到详情也照下，不阻断。
@@ -991,7 +1014,7 @@ export async function buildServer() {
       const res = await need('download').downloadGallery({
         client,
         gallery: gal,
-        dir: targetDir,
+        dir: dlRoot,
         concurrency: concurrency ?? cfg?.concurrency,
         onProgress: (p) => downloadProgress.set(key, { gid, state: 'running', ...(p || {}) }),
       });
@@ -999,8 +1022,14 @@ export async function buildServer() {
       const state = res && res.cancelled ? 'cancelled' : 'done';
       downloadProgress.set(key, { gid, state, finishedAt: new Date().toISOString(), ...(res || {}) });
       // 顺手记历史（store 没就绪就算了）
-      try { await mods.store?.addHistory?.({ type: 'download', gid, token, title, dir: targetDir }); } catch { /* 可选 */ }
-      return ok({ gid, dir: targetDir, ...(res || {}) });
+      const outDir = path.join(dlRoot, `${gid}-${token}`);
+      try { await mods.store?.addHistory?.({ type: 'download', gid, token, title, dir: outDir }); } catch { /* 可选 */ }
+      return ok({
+        gid,
+        dir: outDir,
+        ...(dirWarnings.length ? { dirWarnings } : {}),
+        ...(res || {}),
+      });
     } catch (err) {
       downloadProgress.set(key, { gid, state: 'failed', error: humanize(err) });
       throw err;

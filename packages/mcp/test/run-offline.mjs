@@ -13,6 +13,7 @@ const files = [
   '_t_parse.mjs',
   '_t_exports.mjs',
   '_t_local.mjs',
+  '_t_adopt.mjs',
   '_t_fav.mjs',
   '_t_comments.mjs',
   '_t_compact.mjs',

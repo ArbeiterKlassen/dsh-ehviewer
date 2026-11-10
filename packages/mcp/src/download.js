@@ -1226,3 +1226,142 @@ export async function __selftest() {
 
   return { ok: checks.every((c) => c.ok), checks };
 }
+
+/* ------------------------------------------------------------------ */
+/* 目录对账：老版本、换账号、手滑传错 dir 的旧目录都收编到目标位置         */
+/* ------------------------------------------------------------------ */
+
+/** `~` / 相对路径统一成绝对路径（不建目录） */
+function absDir(p) {
+  const raw = String(p || '').trim();
+  if (!raw) return '';
+  if (raw === '~' || raw.startsWith('~/') || raw.startsWith('~\\')) {
+    const os = require_homedir();
+    return path.resolve(String(os), raw.slice(2));
+  }
+  return path.resolve(raw);
+}
+
+function require_homedir() {
+  // 延迟拿，避免顶部再多一个 import（这个模块是热路径，但只在对账时用）
+  try {
+    return process.env.USERPROFILE || process.env.HOME || '.';
+  } catch {
+    return '.';
+  }
+}
+
+/**
+ * 把调用方给的 `dir` 归一成「根目录 + 这本的目录」。
+ * 传根目录 → root=<dir>, outDir=<dir>/<gid>-<token>；
+ * 传的已经是这本的目录（结尾就是 `<gid>-<token>`）→ 就地下在这，不再套一层。
+ * @returns {{root:string, outDir:string, wasGalleryDir:boolean}}
+ */
+export function normalizeGalleryTarget({ dir, gid, token }) {
+  const base = absDir(dir || path.join(process.cwd(), 'downloads'));
+  const name = `${gid}-${token || 'notoken'}`;
+  const tail = path.basename(base);
+  if (tail === name) return { root: path.dirname(base), outDir: base, wasGalleryDir: true };
+  return { root: base, outDir: path.join(base, name), wasGalleryDir: false };
+}
+
+/** 在若干搜索根下找同名画廊目录：根本身、下一层、两层（不含 target 本身） */
+async function findSiblingGalleryDirs(roots, name, target) {
+  const out = [];
+  const push = (p) => {
+    if (path.resolve(p) === path.resolve(target)) return;
+    if (!out.includes(p)) out.push(p);
+  };
+  const isDir = async (p) => {
+    try {
+      return (await fsp.stat(p)).isDirectory();
+    } catch {
+      return false;
+    }
+  };
+  for (const root of roots) {
+    if (!root) continue;
+    if (await isDir(path.join(root, name))) push(path.join(root, name));
+    let entries = [];
+    try {
+      entries = await fsp.readdir(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      const sub = path.join(root, e.name);
+      if (await isDir(path.join(sub, name))) push(path.join(sub, name));
+    }
+  }
+  return out;
+}
+
+/**
+ * 把别处的同名目录收编到 `<root>/<gid>-<token>`。
+ * - 目标不存在：整目录 rename（同盘，快且原子）
+ * - 目标已存在：把老目录里目标没有的文件搬过去，然后清掉空壳
+ * 失败只回 warning，不阻断下载。
+ * @returns {Promise<{outDir:string, movedFrom?:string, mergedFrom?:string[], warnings:string[]}>}
+ */
+export async function adoptExistingGalleryDir({ root, gid, token, searchRoots = [] }) {
+  const warnings = [];
+  const name = `${gid}-${token || 'notoken'}`;
+  const target = path.join(root, name);
+  const roots = [...new Set([root, ...searchRoots.map((r) => (r ? path.resolve(String(r)) : '')).filter(Boolean)])];
+  const siblings = await findSiblingGalleryDirs(roots, name, target);
+  if (!siblings.length) return { outDir: target, warnings };
+
+  const targetExists = await (async () => {
+    try {
+      return (await fsp.stat(target)).isDirectory();
+    } catch {
+      return false;
+    }
+  })();
+
+  if (!targetExists) {
+    await fsp.mkdir(path.dirname(target), { recursive: true });
+    try {
+      await fsp.rename(siblings[0], target);
+      warnings.push(`旧目录已迁到 ${target}（原 ${siblings[0]}）`);
+      return { outDir: target, movedFrom: siblings[0], warnings };
+    } catch (err) {
+      warnings.push(`旧目录迁移失败（${err?.code || err?.message}），这次仍写在原位置`);
+      return { outDir: siblings[0], movedFrom: null, warnings };
+    }
+  }
+
+  // 两边都在：把老目录里缺的文件补进来（不删老目录里的东西，宁可多留）
+  const merged = [];
+  for (const from of siblings) {
+    let files = [];
+    try {
+      files = await fsp.readdir(from, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const f of files) {
+      const src = path.join(from, f.name);
+      const dst = path.join(target, f.name);
+      try {
+        const [a1, a2] = await Promise.all([fsp.stat(dst), fsp.stat(src)]);
+        // 目标已有：同名同大小当重复，删掉老的那份；大小不同就都留着，宁可多占点
+        if (a1.size === a2.size) await fsp.rm(src, { force: true });
+        else warnings.push(`${f.name} 两边大小不同，保留两份`);
+        continue;
+      } catch { /* 不存在才搬 */ }
+      try {
+        await fsp.rename(src, dst);
+        merged.push(f.name);
+      } catch { /* 单个文件失败就算了 */ }
+    }
+    // 搬空了就把空壳删掉
+    try {
+      const left = await fsp.readdir(from);
+      if (!left.length) await fsp.rmdir(from);
+    } catch { /* ignore */ }
+  }
+  if (merged.length) warnings.push(`合并了 ${merged.length} 个文件（来自 ${siblings.join(', ')}）`);
+  return { outDir: target, mergedFrom: siblings, warnings };
+}

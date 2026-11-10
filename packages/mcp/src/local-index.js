@@ -55,7 +55,12 @@ function deriveAccount(root, dir) {
   const rel = path.relative(root, dir);
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
   const segs = rel.split(/[\\/]+/).filter(Boolean);
-  return segs.length > 1 ? segs[0] : null;
+  if (segs.length <= 1) return null;
+  // 第一层是 <gid>-<token> 说明这本直接躺在根上（老版本 / 手滑传错 dir），
+  // 那就没有账号分层，别把 4317228-0a20 当成账号名
+  const first = segs[0];
+  if (/^\d+-/.test(first)) return null;
+  return first;
 }
 
 function toIso(ms) {
