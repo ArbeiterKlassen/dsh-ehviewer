@@ -1,0 +1,261 @@
+/* 账号与配置页 —— 只用 --eh-* 主题变量，深浅色跟着 DSH 走。
+   类名统一 ehs- 前缀，避免和 style.css / 别的页面打架。 */
+
+.ehs-wrap {
+  padding: 18px 22px 28px;
+  max-width: 880px;
+  color: var(--eh-text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* ── 顶部状态栏 ── */
+.ehs-statusbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  border: 1px solid var(--eh-border);
+  border-radius: 10px;
+  background: var(--eh-bg-elev);
+}
+.ehs-status-main { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.ehs-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--eh-text-dim); flex: none; }
+.ehs-dot.on { background: #37c26a; }
+.ehs-dot.off { background: #d97706; }
+.ehs-meta { color: var(--eh-text-dim); font-size: 12px; }
+.ehs-meta b { color: var(--eh-text); font-weight: 600; }
+.ehs-warn { color: #d97706; font-size: 12px; }
+.ehs-spacer { flex: 1; }
+
+/* ── 卡片 ── */
+.ehs-card {
+  border: 1px solid var(--eh-border);
+  border-radius: 10px;
+  background: var(--eh-bg-elev);
+  padding: 14px 16px 16px;
+  margin-bottom: 14px;
+}
+.ehs-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.ehs-card-title { font-size: 13px; font-weight: 600; letter-spacing: .02em; }
+.ehs-card-sub { color: var(--eh-text-dim); font-size: 11.5px; }
+.ehs-card-head .ehs-spacer { flex: 1; }
+
+/* ── 表单 ── */
+.ehs-field { margin-bottom: 12px; }
+.ehs-field:last-child { margin-bottom: 0; }
+.ehs-label { display: block; font-size: 12px; color: var(--eh-text-dim); margin-bottom: 5px; }
+.ehs-hint { font-size: 11.5px; color: var(--eh-text-dim); margin-top: 5px; }
+.ehs-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.ehs-input,
+.ehs-textarea,
+.ehs-select {
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--eh-text);
+  background: var(--eh-bg);
+  border: 1px solid var(--eh-border);
+  border-radius: 7px;
+  padding: 6px 9px;
+  outline: none;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+.ehs-input:focus,
+.ehs-textarea:focus,
+.ehs-select:focus { border-color: var(--eh-accent); }
+.ehs-input.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.ehs-textarea { resize: vertical; min-height: 62px; line-height: 1.5; }
+.ehs-input.narrow { width: 110px; }
+
+/* ── 按钮 ── */
+.ehs-btn {
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 20px;
+  padding: 5px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--eh-border);
+  background: transparent;
+  color: var(--eh-text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ehs-btn:hover:not(:disabled) { background: var(--eh-bg-hover); }
+.ehs-btn:disabled { opacity: .45; cursor: default; }
+.ehs-btn.primary {
+  background: var(--eh-text);
+  color: var(--eh-bg);
+  border-color: var(--eh-text);
+  font-weight: 600;
+}
+.ehs-btn.primary:hover:not(:disabled) { opacity: .9; background: var(--eh-text); }
+.ehs-btn.ghost { border-color: transparent; color: var(--eh-text-dim); }
+.ehs-btn.ghost:hover:not(:disabled) { color: var(--eh-text); }
+.ehs-btn.small { font-size: 11.5px; padding: 3px 9px; }
+
+/* ── 分段控件 ── */
+.ehs-seg {
+  display: inline-flex;
+  border: 1px solid var(--eh-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--eh-bg);
+}
+.ehs-seg button {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--eh-text-dim);
+  cursor: pointer;
+}
+.ehs-seg button + button { border-left: 1px solid var(--eh-border); }
+.ehs-seg button.on { background: var(--eh-bg-hover); color: var(--eh-text); font-weight: 600; }
+
+/* ── 开关 ── */
+.ehs-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.ehs-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.ehs-switch .track {
+  width: 34px; height: 19px; border-radius: 999px;
+  background: var(--eh-bg-hover);
+  border: 1px solid var(--eh-border);
+  position: relative;
+  transition: background .15s, border-color .15s;
+  flex: none;
+}
+.ehs-switch .track::after {
+  content: '';
+  position: absolute; top: 2px; left: 2px;
+  width: 13px; height: 13px; border-radius: 50%;
+  background: var(--eh-text-dim);
+  transition: transform .15s, background .15s;
+}
+.ehs-switch input:checked + .track { border-color: var(--eh-accent); }
+.ehs-switch input:checked + .track::after { transform: translateX(15px); background: var(--eh-accent); }
+
+/* ── cookie 键标签 ── */
+.ehs-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ehs-chip {
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--eh-border);
+  background: var(--eh-bg);
+  color: var(--eh-text-dim);
+}
+.ehs-chip.on { color: var(--eh-text); border-color: var(--eh-accent); }
+
+/* ── 折叠 ── */
+.ehs-fold > summary {
+  cursor: pointer;
+  color: var(--eh-text-dim);
+  font-size: 12px;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+.ehs-fold > summary::-webkit-details-marker { display: none; }
+.ehs-fold > summary::before { content: '›'; display: inline-block; transition: transform .15s; }
+.ehs-fold[open] > summary::before { transform: rotate(90deg); }
+.ehs-fold[open] > summary { margin-bottom: 8px; }
+
+/* ── 底部操作栏 ── */
+.ehs-actions {
+  position: sticky;
+  bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  margin-top: 4px;
+  border: 1px solid var(--eh-border);
+  border-radius: 10px;
+  background: var(--eh-bg-elev);
+  box-shadow: 0 8px 24px #00000026;
+}
+.ehs-actions .ehs-spacer { flex: 1; }
+.ehs-dirty { font-size: 11.5px; color: var(--eh-text-dim); }
+
+/* ── 提示条 / toast ── */
+.ehs-banner {
+  margin-bottom: 14px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid #d9770655;
+  background: #d9770614;
+  color: var(--eh-text);
+  font-size: 12px;
+}
+.ehs-banner.ok { border-color: #37c26a55; background: #37c26a14; }
+.ehs-toast {
+  position: fixed;
+  right: 18px;
+  bottom: 66px;
+  z-index: 50;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--eh-border);
+  background: var(--eh-bg-elev);
+  color: var(--eh-text);
+  font-size: 12px;
+  box-shadow: 0 6px 24px #0003;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity .18s, transform .18s;
+  pointer-events: none;
+}
+.ehs-toast.show { opacity: 1; transform: translateY(0); }
+.ehs-toast.err { border-color: #d9770655; }
+
+/* ── 目录选择弹层 ── */
+.ehs-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: #0006;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ehs-modal-box {
+  width: min(560px, 88vw);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--eh-border);
+  border-radius: 10px;
+  background: var(--eh-bg-elev);
+  color: var(--eh-text);
+  overflow: hidden;
+}
+.ehs-modal-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-bottom: 1px solid var(--eh-border);
+}
+.ehs-modal-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px; color: var(--eh-text-dim); word-break: break-all; flex: 1;
+}
+.ehs-modal-list { overflow: auto; padding: 6px; flex: 1; }
+.ehs-modal-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 12.5px;
+}
+.ehs-modal-item:hover { background: var(--eh-bg-hover); }
+.ehs-modal-foot { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--eh-border); }
+
+.ehs-empty { color: var(--eh-text-dim); font-size: 12px; padding: 6px 2px; }

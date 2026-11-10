@@ -6,7 +6,10 @@ const qEl = document.getElementById('q');
 const statusEl = document.getElementById('status');
 const toastEl = document.getElementById('toast');
 
-const LABEL = { view: '看过', download: '下载', notes: '笔记', library: '本地库' };
+const LABEL = {
+  view: '看过', download: '下载', notes: '笔记', library: '本地库',
+  home: '主页', popular: '热门', favs: '收藏', subs: '订阅', search: '搜索', settings: '账号与配置',
+};
 const TYPE_LABEL = { view: '看过', download: '下载', search: '搜索' };
 
 const state = { route: parseRoute(), q: '' };
@@ -91,7 +94,9 @@ function parseRoute() {
   }
   if (p.startsWith('/g/')) return { name: 'gallery', gid: p.slice(3) };
   const name = p.slice(1);
-  if (name === 'view' || name === 'download' || name === 'notes' || name === 'library') return { name };
+  if (['view', 'download', 'notes', 'library', 'home', 'popular', 'favs', 'subs', 'search', 'settings'].includes(name)) {
+    return { name };
+  }
   return { name: 'view' };
 }
 
@@ -185,9 +190,17 @@ function navigate(href) {
 
 function commitSearch() {
   const q = qEl.value.trim();
+  const routeName = parseRoute().name;
   let pathname = location.pathname;
-  if (parseRoute().name === 'gallery') pathname = '/view';
+  if (routeName === 'gallery') pathname = '/view';
+  else if (BROWSE_ROUTES.has(routeName)) pathname = '/search';
   const url = new URL(pathname, location.origin);
+  if (routeName === 'search') {
+    for (const key of ['category', 'adv', 'sort']) {
+      const value = new URLSearchParams(location.search).get(key);
+      if (value) url.searchParams.set(key, value);
+    }
+  }
   if (q) url.searchParams.set('q', q);
   history.replaceState(null, '', url);
   render();
@@ -472,6 +485,510 @@ async function renderLibrary(my) {
       </table>
     </div>
   </div>`;
+}
+
+/**
+ * 浏览类页面（主页 / 热门 / 收藏 / 订阅 / 搜索）。
+ * 数据都走 /api/browse/*，由 panel/browse-api.mjs 提供。
+ */
+
+const BROWSE_LABELS = { home: '主页', popular: '热门', favs: '收藏', subs: '订阅', search: '搜索' };
+const BROWSE_ROUTES = new Set(Object.keys(BROWSE_LABELS));
+const BROWSE_PERIODS = ['4h', '1d', '1w', '1m', '1y', 'all'];
+const BROWSE_CATS = [
+  ['doujinshi', '同人'],
+  ['manga', '漫画'],
+  ['artistcg', '画集'],
+  ['gamecg', '游戏'],
+  ['western', '欧美'],
+  ['nonh', '非 H'],
+  ['imageset', '图集'],
+  ['cosplay', 'Cos'],
+  ['asianporn', '亚洲'],
+  ['misc', '其他'],
+];
+const BROWSE_CAT_NAMES = BROWSE_CATS.map(([name]) => name);
+
+let browseStatusCache = { at: 0, data: null };
+
+async function getBrowseStatus() {
+  if (browseStatusCache.data && Date.now() - browseStatusCache.at < 60000) {
+    return browseStatusCache.data;
+  }
+  let data;
+  try {
+    data = await api('/api/browse/status');
+  } catch {
+    data = { loggedIn: false, site: null, memberId: null, cookieAgeDays: null, error: true };
+  }
+  browseStatusCache = { at: Date.now(), data };
+  return data;
+}
+
+function browseStatusHtml(s) {
+  if (!s) return '登录态检查中…';
+  if (!s.loggedIn) return `未登录${s.site ? ` · ${s.site}` : ''}`;
+  const who = s.username || s.memberId || '已登录';
+  const age = s.cookieAgeDays != null ? ` · cookie ${s.cookieAgeDays} 天` : '';
+  return `${who}${s.site ? ` · ${s.site}` : ''}${age}`;
+}
+
+function browseThumb(raw) {
+  return `/api/browse/thumb?u=${encodeURIComponent(raw)}`;
+}
+
+const BROWSE_CAT_SITE = {
+  doujinshi: 'Doujinshi',
+  manga: 'Manga',
+  artistcg: 'Artist CG',
+  gamecg: 'Game CG',
+  western: 'Western',
+  nonh: 'Non-H',
+  imageset: 'Image Set',
+  cosplay: 'Cosplay',
+  asianporn: 'Asian Porn',
+  misc: 'Misc',
+};
+
+function browseCategoryBadge(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const key = raw.toLowerCase().replace(/[\s_-]+/g, '');
+  const display = BROWSE_CAT_SITE[key] || raw;
+  const story = key === 'doujinshi' || key === 'manga';
+  const art = key === 'artistcg' || key === 'gamecg' || key === 'imageset';
+  const real = key === 'cosplay' || key === 'asianporn';
+  const cls = story ? 'cat-story' : art ? 'cat-art' : real ? 'cat-real' : 'cat-misc';
+  const hint = key === 'misc' ? '杂项：AI 生成 / 短篇等居多' : key === 'nonh' ? '非成人' : '';
+  return `<span class="b-cat ${cls}"${hint ? ` title="${esc(hint)}"` : ''}>${esc(display)}</span>`;
+}
+
+function browseCardHtml(it) {
+  const gid = String(it.gid);
+  const title = it.title || `gid ${gid}`;
+  const cover = it.thumb
+    ? `<img src="${esc(browseThumb(it.thumb))}" alt="" loading="lazy">`
+    : '<div class="b-ph">无封面</div>';
+  const badge = browseCategoryBadge(it.category);
+  const meta = [
+    it.pages ? `${it.pages} 页` : '',
+    it.rating ? `★ ${it.rating}` : '',
+    it.uploader || '',
+  ].filter(Boolean).map((v) => esc(String(v))).join(' · ');
+  const metaHtml = `${badge}${meta}`;
+  const read = it.token
+    ? `<button class="b-read" type="button" data-readto="/read/${encodeURIComponent(gid)}/${encodeURIComponent(it.token)}">阅读</button>`
+    : '';
+  return `<div class="b-card" data-gid="${esc(gid)}">
+    <div class="b-cover">${cover}</div>
+    <div class="b-body">
+      <div class="b-title">${esc(title)}</div>
+      <div class="b-meta">${metaHtml || '&nbsp;'}</div>
+    </div>
+    ${read}
+  </div>`;
+}
+
+function browseWarnings(list) {
+  const warnings = [...new Set((Array.isArray(list) ? list : []).filter(Boolean))].slice(0, 4);
+  if (!warnings.length) return '';
+  return `<div class="b-warn">${warnings.map((w) => `<div>${esc(w)}</div>`).join('')}</div>`;
+}
+
+function browseEmpty(title, desc, hint) {
+  return `<div class="b-empty"><h2>${esc(title)}</h2><p>${esc(desc || '')}</p>${hint ? `<div class="b-hint">${esc(hint)}</div>` : ''}</div>`;
+}
+
+function bindBrowseGrid(root) {
+  if (!root) return;
+  root.addEventListener('click', (e) => {
+    if (e.target.closest('[data-readto]')) return;
+    const card = e.target.closest('.b-card');
+    if (card && card.dataset.gid) navigate(`/g/${encodeURIComponent(card.dataset.gid)}`);
+  });
+}
+
+function attachTagSuggest(input) {
+  if (!input) return;
+  const list = document.getElementById('b-tag-list');
+  if (!list) return;
+  let timer = 0;
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    const q = input.value.trim();
+    if (!q) {
+      list.innerHTML = '';
+      return;
+    }
+    timer = setTimeout(async () => {
+      try {
+        const data = await api(`/api/browse/tags?q=${encodeURIComponent(q)}`);
+        list.innerHTML = (data.items || [])
+          .map((v) => `<option value="${esc(v)}"></option>`)
+          .join('');
+      } catch {
+        /* tag 补全失败不影响输入 */
+      }
+    }, 220);
+  });
+}
+
+function sortBrowseItems(items, sort) {
+  const arr = Array.isArray(items) ? items.slice() : [];
+  if (sort === 'pages-asc') arr.sort((a, b) => (a.pages ?? 999999) - (b.pages ?? 999999));
+  else if (sort === 'pages-desc') arr.sort((a, b) => (b.pages ?? -1) - (a.pages ?? -1));
+  else if (sort === 'rating-desc') arr.sort((a, b) => (b.rating ?? -1) - (a.rating ?? -1));
+  return arr;
+}
+
+function setBrowseCrumb(kind) {
+  crumb.textContent = BROWSE_LABELS[kind] || kind;
+  document.title = `${BROWSE_LABELS[kind] || kind} · DSH-EH`;
+}
+
+function browsePeriodTabs(current) {
+  return `<div class="b-tabs">${BROWSE_PERIODS.map((p) => (
+    `<button type="button" class="b-tab${p === current ? ' on' : ''}" data-period="${p}">${p === 'all' ? '全部' : p}</button>`
+  )).join('')}</div>`;
+}
+
+function browseFavTabs(current) {
+  const tabs = [];
+  for (let i = 0; i <= 9; i += 1) {
+    tabs.push(`<button type="button" class="b-tab${String(i) === String(current) ? ' on' : ''}" data-fav-cat="${i}">夹 ${i}</button>`);
+  }
+  return `<div class="b-tabs">${tabs.join('')}</div>`;
+}
+
+/* -------- 主页 -------- */
+
+async function browseHome(my) {
+  setBrowseCrumb('home');
+  const [status, data] = await Promise.all([getBrowseStatus(), api('/api/browse/home?page=0')]);
+  if (my !== seq) return;
+  const items = Array.isArray(data.items) ? data.items : [];
+  app.innerHTML = `<div class="wrap">
+    <div class="b-head"><h1>主页</h1><span class="b-status">${esc(browseStatusHtml(status))}</span></div>
+    ${browseWarnings(data.warnings)}
+    ${items.length
+      ? `<div class="b-grid" id="b-grid">${items.map(browseCardHtml).join('')}</div>`
+      : browseEmpty('主页没拉到条目', '可能是站点限流或网络问题，刷新再试一次。')}
+  </div>`;
+  bindBrowseGrid(document.getElementById('b-grid'));
+}
+
+/* -------- 热门 -------- */
+
+async function browsePopular(my) {
+  setBrowseCrumb('popular');
+  const params = new URLSearchParams(location.search);
+  const period = BROWSE_PERIODS.includes(params.get('period')) ? params.get('period') : 'all';
+  const [status, data] = await Promise.all([
+    getBrowseStatus(),
+    api(`/api/browse/popular?period=${encodeURIComponent(period)}&page=0`),
+  ]);
+  if (my !== seq) return;
+  const items = Array.isArray(data.items) ? data.items : [];
+  app.innerHTML = `<div class="wrap">
+    <div class="b-head"><h1>热门</h1><span class="b-status">${esc(browseStatusHtml(status))}</span></div>
+    ${browsePeriodTabs(period)}
+    ${browseWarnings(data.warnings)}
+    ${items.length
+      ? `<div class="b-grid" id="b-grid">${items.map(browseCardHtml).join('')}</div>`
+      : browseEmpty('这个时间窗没有条目', '4h / 1d / 1w / 1m / 1y 的排行榜需要登录；先试「全部」。')}
+  </div>`;
+  bindBrowseGrid(document.getElementById('b-grid'));
+  app.querySelectorAll('[data-period]').forEach((btn) => {
+    btn.onclick = () => navigate(`/popular?period=${encodeURIComponent(btn.dataset.period)}`);
+  });
+}
+
+/* -------- 收藏 -------- */
+
+async function browseFavs(my) {
+  setBrowseCrumb('favs');
+  const params = new URLSearchParams(location.search);
+  let cat = params.get('cat') || '0';
+  if (!/^\d$/.test(cat)) cat = '0';
+  const q = (params.get('q') || '').trim();
+  const [status, data] = await Promise.all([
+    getBrowseStatus(),
+    api(`/api/browse/favs?cat=${encodeURIComponent(cat)}&page=0&q=${encodeURIComponent(q)}`),
+  ]);
+  if (my !== seq) return;
+  const items = Array.isArray(data.items) ? data.items : [];
+  app.innerHTML = `<div class="wrap">
+    <div class="b-head"><h1>收藏</h1><span class="b-status">${esc(browseStatusHtml(status))}</span></div>
+    ${browseFavTabs(cat)}
+    <form class="b-searchbar" id="fav-form">
+      <input id="fav-q" name="q" type="search" value="${esc(q)}" placeholder="在收藏夹里搜名称 / 标签 / 备注" list="b-tag-list" autocomplete="off">
+      <datalist id="b-tag-list"></datalist>
+      <button class="btn" type="submit">搜收藏</button>
+    </form>
+    ${browseWarnings(data.warnings)}
+    ${items.length
+      ? `<div class="b-grid" id="b-grid">${items.map(browseCardHtml).join('')}</div>`
+      : browseEmpty(q ? '这个夹里没有匹配' : '这个夹是空的', q ? `没有名称 / 标签 / 备注包含「${q}」的条目。` : '换个夹，或先让 agent 用 eh_fav_add 收几本。')}
+  </div>`;
+  bindBrowseGrid(document.getElementById('b-grid'));
+  attachTagSuggest(document.getElementById('fav-q'));
+  app.querySelectorAll('[data-fav-cat]').forEach((btn) => {
+    btn.onclick = () => {
+      const url = new URL('/favs', location.origin);
+      url.searchParams.set('cat', btn.dataset.favCat);
+      if (q) url.searchParams.set('q', q);
+      navigate(url.pathname + url.search);
+    };
+  });
+  const form = document.getElementById('fav-form');
+  if (form) {
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      const value = (document.getElementById('fav-q').value || '').trim();
+      const url = new URL('/favs', location.origin);
+      url.searchParams.set('cat', cat);
+      if (value) url.searchParams.set('q', value);
+      navigate(url.pathname + url.search);
+    };
+  }
+}
+
+/* -------- 订阅 -------- */
+
+function subsMetaLine(s) {
+  const parts = [];
+  if (s.category) parts.push(s.category);
+  parts.push(s.lastCheckAt ? `上次检查 ${fmtRel(s.lastCheckAt)}` : '从未检查');
+  parts.push(`已见 ${s.seenCount || 0}`);
+  return parts.join(' · ');
+}
+
+async function browseSubs(my) {
+  setBrowseCrumb('subs');
+  const [status, data] = await Promise.all([getBrowseStatus(), api('/api/browse/subs')]);
+  if (my !== seq) return;
+  const items = Array.isArray(data.items) ? data.items : [];
+  const rows = items.map((s) => `<div class="sub-row" data-sub-id="${esc(s.id)}">
+      <div class="sub-main">
+        <div class="sub-query">${browseCategoryBadge(s.category)}${s.category && browseCategoryBadge(s.category) ? ' ' : ''}${esc(s.query)}</div>
+        <div class="sub-meta">${esc(subsMetaLine(s))}</div>
+      </div>
+      <div class="sub-new" data-new-for="${esc(s.id)}">新 0</div>
+    </div>`).join('');
+  app.innerHTML = `<div class="wrap">
+    <div class="b-head"><h1>订阅</h1><span class="b-status">${esc(browseStatusHtml(status))}</span></div>
+    <div class="b-toolbar">
+      <button class="btn" id="subs-check" type="button">检查新作品</button>
+      <span class="b-hint">最多等 20 秒；会按订阅逐个往后翻，遇到整页旧的就停。</span>
+    </div>
+    ${items.length ? `<div class="subs-list">${rows}</div>` : browseEmpty('还没有订阅', '让 agent 用 eh_sub_add 加一条，比如 query=「touhou」。')}
+    <div id="subs-result"></div>
+  </div>`;
+  const btn = document.getElementById('subs-check');
+  if (btn) {
+    btn.onclick = async () => {
+      btn.disabled = true;
+      const label = btn.textContent;
+      btn.textContent = '检查中…（最多 20s）';
+      try {
+        const r = await api('/api/browse/subs/check');
+        if (my !== seq) return;
+        toast(`检查完成：${r.totalNew || 0} 个新作品`);
+        const byId = new Map((r.results || []).map((x) => [x.id, x]));
+        for (const [id, x] of byId) {
+          const el = document.querySelector(`[data-new-for="${id}"]`);
+          if (el) el.textContent = `新 ${x.newCount || 0}`;
+        }
+        try {
+          const fresh = await api('/api/browse/subs');
+          for (const s of fresh.items || []) {
+            const row = document.querySelector(`.sub-row[data-sub-id="${s.id}"]`);
+            const meta = row && row.querySelector('.sub-meta');
+            if (meta) meta.textContent = subsMetaLine(s);
+          }
+        } catch {
+          /* 时间戳刷新失败不重要 */
+        }
+        const box = document.getElementById('subs-result');
+        if (box) {
+          const lines = (r.results || []).map((x) => {
+            const titles = (x.newItems || []).slice(0, 5).map((it) => `<a href="/g/${encodeURIComponent(String(it.gid))}" data-spa>${esc(it.title || `gid ${it.gid}`)}</a>`).join('、');
+            return `<div class="sub-result-line"><b>${esc(x.query)}</b>：${x.newCount || 0} 个${titles ? ` — ${titles}` : ''}${x.error ? `（${esc(x.error)}）` : ''}</div>`;
+          }).join('');
+          box.innerHTML = `<div class="b-result">${lines || '<div class="b-hint">没有订阅需要检查。</div>'}</div>`;
+        }
+      } catch (err) {
+        toast(`检查失败：${err && err.message ? err.message : err}`);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = label;
+      }
+    };
+  }
+}
+
+/* -------- 搜索 -------- */
+
+function searchAdvFromParams(params) {
+  try {
+    const adv = JSON.parse(params.get('adv') || '{}');
+    return adv && typeof adv === 'object' ? adv : {};
+  } catch {
+    return {};
+  }
+}
+
+function searchHrefFromForm(form) {
+  const fd = new FormData(form);
+  const q = String(fd.get('q') || '').trim();
+  const cats = BROWSE_CAT_NAMES.filter((name) => fd.get(name));
+  const adv = {};
+  const rating = Number(fd.get('minRating'));
+  if (Number.isFinite(rating) && rating >= 1) adv.minRating = Math.min(5, Math.floor(rating));
+  const from = Number(fd.get('pageFrom'));
+  if (Number.isFinite(from) && from > 0) adv.pageFrom = Math.floor(from);
+  const to = Number(fd.get('pageTo'));
+  if (Number.isFinite(to) && to > 0) adv.pageTo = Math.floor(to);
+  if (fd.get('withTorrents')) adv.withTorrents = true;
+  if (fd.get('expunged')) adv.expunged = true;
+
+  const url = new URL('/search', location.origin);
+  if (q) url.searchParams.set('q', q);
+  if (cats.length) url.searchParams.set('category', cats.join(','));
+  if (Object.keys(adv).length) url.searchParams.set('adv', JSON.stringify(adv));
+  const sort = String(fd.get('sort') || 'default');
+  if (sort !== 'default') url.searchParams.set('sort', sort);
+  return url.pathname + url.search;
+}
+
+async function browseSearch(my) {
+  setBrowseCrumb('search');
+  const params = new URLSearchParams(location.search);
+  const q = (params.get('q') || '').trim();
+  const cats = (params.get('category') || '').split(',').filter((c) => BROWSE_CAT_NAMES.includes(c));
+  const adv = searchAdvFromParams(params);
+  const sort = params.get('sort') || 'default';
+  const active = Boolean(q || cats.length || Object.keys(adv).length);
+
+  const [status, data] = await Promise.all([
+    getBrowseStatus(),
+    active
+      ? api(
+          `/api/browse/search?q=${encodeURIComponent(q)}&page=0`
+          + (cats.length ? `&category=${encodeURIComponent(cats.join(','))}` : '')
+          + (Object.keys(adv).length ? `&adv=${encodeURIComponent(JSON.stringify(adv))}` : ''),
+        )
+      : Promise.resolve({ items: [], hasMore: false, warnings: [] }),
+  ]);
+  if (my !== seq) return;
+
+  const catChecks = BROWSE_CATS.map(([name, label]) => (
+    `<label class="b-catcheck"><input type="checkbox" name="${name}" value="${name}"${cats.includes(name) ? ' checked' : ''}> ${label}</label>`
+  )).join('');
+  const hasAdv = Object.keys(adv).length > 0;
+  const results = sortBrowseItems(data.items || [], sort);
+
+  app.innerHTML = `<div class="wrap">
+    <div class="b-head"><h1>搜索</h1><span class="b-status">${esc(browseStatusHtml(status))}</span></div>
+    <form class="b-search-form" id="search-form">
+      <div class="b-searchbar">
+        <input id="search-q" name="q" type="search" value="${esc(q)}" placeholder="关键词 / tag，例如 touhou 或 巨乳" list="b-tag-list" autocomplete="off">
+        <datalist id="b-tag-list"></datalist>
+        <button class="btn" type="submit">搜索</button>
+      </div>
+      <div class="b-cats">${catChecks}</div>
+      ${cats.length ? `<div class="b-active"><span>筛选中：</span>${cats.map((c) => browseCategoryBadge(c)).join('')}<button type="button" class="b-clear" id="clear-cats">清除</button></div>` : ''}
+      <details class="b-adv"${hasAdv ? ' open' : ''}>
+        <summary>高级</summary>
+        <div class="b-adv-grid">
+          <label>最低评分 <input type="number" name="minRating" min="1" max="5" step="1" value="${esc(String(adv.minRating || ''))}"></label>
+          <label>页数下限 <input type="number" name="pageFrom" min="1" step="1" value="${esc(String(adv.pageFrom || ''))}"></label>
+          <label>页数上限 <input type="number" name="pageTo" min="1" step="1" value="${esc(String(adv.pageTo || ''))}"></label>
+          <label class="b-inline"><input type="checkbox" name="withTorrents"${adv.withTorrents ? ' checked' : ''}> 仅有种子的</label>
+          <label class="b-inline"><input type="checkbox" name="expunged"${adv.expunged ? ' checked' : ''}> 含已删除</label>
+          <label>排序
+            <select name="sort">
+              <option value="default"${sort === 'default' ? ' selected' : ''}>站点默认</option>
+              <option value="pages-asc"${sort === 'pages-asc' ? ' selected' : ''}>页数少 → 多</option>
+              <option value="pages-desc"${sort === 'pages-desc' ? ' selected' : ''}>页数多 → 少</option>
+              <option value="rating-desc"${sort === 'rating-desc' ? ' selected' : ''}>评分高 → 低</option>
+            </select>
+          </label>
+        </div>
+      </details>
+    </form>
+    ${browseWarnings(data.warnings)}
+    ${active
+      ? (results.length
+          ? `<div class="b-grid" id="b-grid">${results.map(browseCardHtml).join('')}</div>
+             <div class="b-more" id="b-more">${data.hasMore ? '<button class="btn" type="button" id="b-more-btn">加载更多</button>' : ''}</div>`
+          : browseEmpty('没有搜到结果', '换个关键词，或放宽分类 / 高级过滤。'))
+      : browseEmpty('输入关键词开始搜索', '也可以先勾分类、展开「高级」加条件。', '中文 tag 会走本地标签库补全。')}
+  </div>`;
+
+  attachTagSuggest(document.getElementById('search-q'));
+  bindBrowseGrid(document.getElementById('b-grid'));
+
+  const form = document.getElementById('search-form');
+  if (form) {
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      navigate(searchHrefFromForm(form));
+    };
+  }
+  const clearCats = document.getElementById('clear-cats');
+  if (clearCats) {
+    clearCats.onclick = () => {
+      const u = new URL(location.href);
+      u.searchParams.delete('category');
+      navigate(u.pathname + u.search);
+    };
+  }
+
+  const moreBtn = document.getElementById('b-more-btn');
+  if (moreBtn) {
+    let page = 0;
+    let loaded = results.slice();
+    const grid = document.getElementById('b-grid');
+    moreBtn.onclick = async () => {
+      moreBtn.disabled = true;
+      moreBtn.textContent = '加载中…';
+      try {
+        page += 1;
+        const next = await api(
+          `/api/browse/search?q=${encodeURIComponent(q)}&page=${page}`
+          + (cats.length ? `&category=${encodeURIComponent(cats.join(','))}` : '')
+          + (Object.keys(adv).length ? `&adv=${encodeURIComponent(JSON.stringify(adv))}` : ''),
+        );
+        if (my !== seq) return;
+        loaded = sortBrowseItems(loaded.concat(next.items || []), sort);
+        if (grid) grid.innerHTML = loaded.map(browseCardHtml).join('');
+        if (!next.hasMore) moreBtn.remove();
+        else {
+          moreBtn.disabled = false;
+          moreBtn.textContent = '加载更多';
+        }
+        const u = new URL(location.href);
+        if (page > 0) u.searchParams.set('page', String(page));
+        history.replaceState(null, '', u);
+      } catch (err) {
+        page -= 1;
+        moreBtn.disabled = false;
+        moreBtn.textContent = '加载更多';
+        toast(`加载失败：${err && err.message ? err.message : err}`);
+      }
+    };
+  }
+}
+
+async function renderBrowse(my, kind) {
+  if (kind === 'home') return browseHome(my);
+  if (kind === 'popular') return browsePopular(my);
+  if (kind === 'favs') return browseFavs(my);
+  if (kind === 'subs') return browseSubs(my);
+  if (kind === 'search') return browseSearch(my);
+  setBrowseCrumb(kind);
+  app.innerHTML = browseEmpty('未知的浏览页', `没有 ${kind} 这个视图。`);
 }
 
 async function renderGallery(my, gid) {
@@ -865,6 +1382,15 @@ async function render() {
     else if (route.name === 'download') await renderDownload(my);
     else if (route.name === 'notes') await renderNotes(my);
     else if (route.name === 'library') await renderLibrary(my);
+    else if (route.name === 'home') await renderBrowse(my, 'home');
+    else if (route.name === 'popular') await renderBrowse(my, 'popular');
+    else if (route.name === 'favs') await renderBrowse(my, 'favs');
+    else if (route.name === 'subs') await renderBrowse(my, 'subs');
+    else if (route.name === 'search') await renderBrowse(my, 'search');
+    else if (route.name === 'settings') {
+      if (window.DSHEHSettings) await window.DSHEHSettings.render(app, my);
+      else app.innerHTML = '<div class="empty">设置模块没加载</div>';
+    }
     else await renderView(my);
   } catch (err) {
     if (my !== seq) return;
@@ -879,6 +1405,8 @@ async function render() {
 let qTimer = 0;
 qEl.addEventListener('input', () => {
   clearTimeout(qTimer);
+  // 浏览类页面只在回车时跳到 /search；本地视图仍旧 300ms 防抖。
+  if (BROWSE_ROUTES.has(parseRoute().name)) return;
   qTimer = setTimeout(commitSearch, 300);
 });
 qEl.addEventListener('keydown', (e) => {

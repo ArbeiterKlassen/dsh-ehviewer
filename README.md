@@ -79,6 +79,9 @@ node test/_t_tags.mjs              # 离线验证，期望 PASS n/0
 DSH 里点侧边栏的 **DSH-EH** 就能在窗口内打开它（`dsh-eh-panel` 插件注册的 `main` 面板，iframe 嵌 7712，服务没起会自动拉起）。
 
 配色跟着 DSH 本体走：内嵌时由 `dsh-eh-panel` 把 8 个颜色变量（`--eh-bg` / `-bg-elev` / `-bg-hover` / `-border` / `-text` / `-text-dim` / `-accent` / `-accent-dim`）从 DSH 的真实 token 里取出来 postMessage 下发，`mode` 取自 `body[data-ds-dark-theme]`；切主题即时生效。单独用浏览器打开时按 `prefers-color-scheme` 自己判断。
+面板现在分三组：**浏览**（主页 / 热门 / 收藏 / 订阅 / 搜索）、**本地**（看过 / 下载 / 笔记 / 本地库）、**设置**（账号与配置）。浏览类页面直接复用 MCP 的 cookie 与限速，卡片上带站点原样的 `category` 角标（叙事类 / 差分类 / 真人各一色，`Misc`、`Non-H` 带 hover 说明）。
+
+账号与配置页可以做账号密码登录、粘贴 cookie、切站点、改代理 / 下载目录 / 账号分层 / 并发与限速；cookie 只显示键名与长度，写盘后 MCP 下次调用自动生效。
 阅读器在面板里，不再跳浏览器：本地有下载就优先读本地文件，没有就走在线（`panel/online.mjs` 复用同一份 config / cookie / 代理 / 解析器，20 页一个窗口懒加载）。← → 翻页、Home/End 首尾、Esc 回详情、宽屏可双页；顶部只有「在源站打开 ↗」一个出口会交给系统浏览器。
 
 

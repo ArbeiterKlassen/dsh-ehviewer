@@ -724,8 +724,10 @@ async function serveStatic(req, res, pathname) {
 
 const serverHandler = async (req, res) => {
   try {
-    if (req.method !== 'GET' && req.method !== 'HEAD') {
-      sendJson(res, 405, { error: '只支持 GET' });
+    const url0 = new URL(req.url || '/', 'http://127.0.0.1');
+    const writeRoute = url0.pathname.startsWith('/api/settings');
+    if (req.method !== 'GET' && req.method !== 'HEAD' && !(writeRoute && req.method === 'POST')) {
+      sendJson(res, 405, { error: '只支持 GET（/api/settings 额外支持 POST）' });
       return;
     }
     const u = new URL(req.url || '/', 'http://127.0.0.1');
@@ -749,6 +751,14 @@ const serverHandler = async (req, res) => {
     if (p === '/api/notes') return await apiNotes(req, res, u);
     if (p === '/api/library') return await apiLibrary(req, res, u);
     if (p.startsWith('/api/online/')) return await apiOnline(req, res, u, p);
+    if (p.startsWith('/api/browse')) {
+      const browse = await import('./browse-api.mjs');
+      return await browse.handle(req, res, u, p);
+    }
+    if (p.startsWith('/api/settings')) {
+      const st = await import('./settings-api.mjs');
+      return await st.handle(req, res, u, p);
+    }
     if (p.startsWith('/api/gallery/')) {
       return await apiGallery(req, res, p.slice('/api/gallery/'.length));
     }

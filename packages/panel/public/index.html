@@ -11,10 +11,19 @@
 <aside class="side">
   <div class="brand"><b>DSH-EH</b><span>本地面板</span></div>
   <nav id="nav">
+    <div class="nav-group">浏览</div>
+    <a href="/home" data-nav="home" data-spa><i></i>主页</a>
+    <a href="/popular" data-nav="popular" data-spa><i></i>热门</a>
+    <a href="/favs" data-nav="favs" data-spa><i></i>收藏</a>
+    <a href="/subs" data-nav="subs" data-spa><i></i>订阅</a>
+    <a href="/search" data-nav="search" data-spa><i></i>搜索</a>
+    <div class="nav-group">本地</div>
     <a href="/view" data-nav="view" data-spa><i></i>看过</a>
     <a href="/download" data-nav="download" data-spa><i></i>下载</a>
     <a href="/notes" data-nav="notes" data-spa><i></i>笔记</a>
     <a href="/library" data-nav="library" data-spa><i></i>本地库</a>
+    <div class="nav-group">设置</div>
+    <a href="/settings" data-nav="settings" data-spa><i></i>账号与配置</a>
   </nav>
   <div class="side-foot" id="status">连接中…</div>
 </aside>
@@ -30,5 +39,6 @@
 </div>
 <div class="toast" id="toast"></div>
 <script type="module" src="/app.js"></script>
+<script type="module" src="/settings.js"></script>
 </body>
 </html>
