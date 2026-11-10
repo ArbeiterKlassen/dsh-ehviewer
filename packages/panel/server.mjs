@@ -13,8 +13,10 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import * as online from './online.mjs';
+import { getLocalImage } from './fetch-cache.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -78,15 +80,42 @@ function isInside(root, target) {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
+function etagMatches(header, etag) {
+  if (!header) return false;
+  return String(header)
+    .split(',')
+    .some((v) => v.trim().replace(/^W\//, '') === etag);
+}
+
+function compressibleType(type) {
+  return /^(text\/|application\/json\b|text\/javascript\b|image\/svg\+xml\b)/i.test(String(type || ''));
+}
+
+/** 统一发送文本/JSON：>1KB 且客户端接受 gzip 时压缩，并带 Vary。 */
+function sendBody(req, res, status, body, type, headers = {}) {
+  const h = { ...headers, 'Content-Type': type };
+  const buf = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  let out = buf;
+  const canZip = buf.length > 1024 && compressibleType(type);
+  if (canZip) {
+    h.Vary = h.Vary ? `${h.Vary}, Accept-Encoding` : 'Accept-Encoding';
+    if (/\bgzip\b/i.test(String((req && req.headers && req.headers['accept-encoding']) || ''))) {
+      out = zlib.gzipSync(buf);
+      h['Content-Encoding'] = 'gzip';
+    }
+  }
+  h['Content-Length'] = out.length;
+  res.writeHead(status, h);
+  if (req && req.method === 'HEAD') return res.end();
+  if (res.destroyed) return;
+  res.end(out);
+}
+
 function sendJson(res, status, payload) {
   const body = Buffer.from(JSON.stringify(payload));
-  res.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Content-Length': body.length,
+  sendBody(res.req, res, status, body, 'application/json; charset=utf-8', {
     'Cache-Control': 'no-store',
   });
-  if (res.req && res.req.method === 'HEAD') return res.end();
-  res.end(body);
 }
 
 async function readJsonFile(file) {
@@ -499,7 +528,44 @@ async function apiLibrary(req, res, u) {
   });
 }
 
-async function apiGallery(req, res, gidRaw) {
+const galleryLiveCache = new Map(); // gid -> {at, data}  TTL 5min
+
+/** 详情页只从本地数据拼不出 token/标题时，补一次在线详情（有缓存，失败不阻断） */
+async function fetchLiveGallery(gid, token) {
+  const key = String(gid);
+  const hit = galleryLiveCache.get(key);
+  if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.data;
+  try {
+    const cfg = await import('dsh-ehviewer/config');
+    const http = await import('dsh-ehviewer/http');
+    const browse = await import('dsh-ehviewer/browse');
+    const gallery = await import('dsh-ehviewer/gallery');
+    const conf = await cfg.loadConfig();
+    const client = http.createClient ? await http.createClient(conf) : null;
+    if (!client) return null;
+    const base = gallery.resolveBase(conf, 'https://exhentai.org');
+    const r = await browse.galleryDetail(client, { base, gid: Number(gid), token });
+    const d = r && r.detail ? r.detail : null;
+    if (!d) return null;
+    const data = {
+      token: d.token || token || null,
+      title: d.title || null,
+      titleJpn: d.jtitle || null,
+      pages: d.pages ?? null,
+      category: d.category || null,
+      uploader: d.uploader || null,
+      rating: d.rating ?? null,
+      site: r.site || null,
+      url: d.url || null,
+    };
+    galleryLiveCache.set(key, { at: Date.now(), data });
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+async function apiGallery(req, res, gidRaw, url) {
   const gid = decodeURIComponent(gidRaw);
   if (!/^\d+$/.test(gid)) {
     sendJson(res, 400, { error: 'gid 必须是数字' });
@@ -521,11 +587,22 @@ async function apiGallery(req, res, gidRaw) {
       }
     : null;
   const note = notes.items[gid] || null;
-  const token = rawHist.find((h) => h.token)?.token || note?.token || null;
+  const qToken = (url && (url.searchParams.get('token') || url.searchParams.get('t'))) || null;
+  let token = qToken || rawHist.find((h) => h.token)?.token || note?.token || null;
   const local = await resolveLocal(gid, token);
   const download = await resolveDownloadDir(gid, token);
   const titled = rawHist.find((h) => h.title);
-  const title = local?.title || titled?.title || titled?.jtitle || note?.title || null;
+  let title = local?.title || titled?.title || titled?.jtitle || note?.title || null;
+
+  // 从搜索结果/详情链接点进来时，本地可能一条记录都没有：补一次在线详情
+  let live = null;
+  if ((!title || !token || !local) && token) {
+    live = await fetchLiveGallery(gid, token);
+    if (live) {
+      token = token || live.token;
+      title = title || live.title;
+    }
+  }
 
   const hist = rawHist.map((h) => {
     const out = { ...h, hasNote: !!note };
@@ -561,6 +638,18 @@ async function apiGallery(req, res, gidRaw) {
         }
       : null,
     download,
+    online: live
+      ? {
+          title: live.title,
+          titleJpn: live.titleJpn,
+          pages: live.pages,
+          category: live.category,
+          uploader: live.uploader,
+          rating: live.rating,
+          site: live.site,
+          url: live.url,
+        }
+      : null,
   });
 }
 
@@ -663,18 +752,55 @@ async function handleImg(req, res, u) {
     return;
   }
 
-  res.writeHead(200, {
-    'Content-Type': IMG_MIME[ext] || 'application/octet-stream',
-    'Content-Length': st.size,
-    'Cache-Control': 'max-age=300',
+  const rawW = u.searchParams.get('w');
+  const width = rawW === '0' || rawW === 'none' ? 0 : clampInt(rawW, 400, 64, 2000);
+  const want = u.searchParams.get('want') === 'original' ? 'original' : 'webp';
+
+  let out;
+  try {
+    out = await getLocalImage({ file: real, width, want });
+  } catch (err) {
+    if (err && err.status === 404) sendJson(res, 404, { error: '文件不存在' });
+    else sendJson(res, 500, { error: `读取图片失败：${(err && err.message) || err}` });
+    return;
+  }
+
+  const etag = `"${out.etag}"`;
+  const headers = {
+    'Content-Type': out.mime,
+    'Cache-Control': 'private, max-age=604800, immutable',
+    ETag: etag,
+    'Last-Modified': st.mtime.toUTCString(),
+    'X-Cache': out.cached ? 'hit' : 'miss',
+    'X-Resized': out.resized ? '1' : '0',
+    'X-Resize-Backend': out.backend || 'none',
+  };
+
+  // 客户端断开时不要冒未捕获异常。
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      /* 连接已断，静默丢弃 */
+    }
   });
+
+  if (etagMatches(req.headers['if-none-match'], etag)) {
+    res.writeHead(304, headers);
+    res.end();
+    return;
+  }
+
+  headers['Content-Length'] = out.buffer.length;
+  res.writeHead(200, headers);
   if (req.method === 'HEAD') {
     res.end();
     return;
   }
-  const stream = fs.createReadStream(real);
-  stream.on('error', () => res.destroy());
-  stream.pipe(res);
+  if (res.destroyed) return;
+  try {
+    res.end(out.buffer);
+  } catch {
+    if (!res.destroyed) res.destroy();
+  }
 }
 
 // ------------------------------------------------------------------- static
@@ -707,17 +833,29 @@ async function serveStatic(req, res, pathname) {
   }
 
   const ext = path.extname(file).toLowerCase();
-  const body = await fsp.readFile(file);
-  res.writeHead(200, {
-    'Content-Type': STATIC_MIME[ext] || 'application/octet-stream',
-    'Content-Length': body.length,
-    'Cache-Control': 'no-store',
-  });
-  if (req.method === 'HEAD') {
+  const type = STATIC_MIME[ext] || 'application/octet-stream';
+  // 静态资源统一协商缓存：每次都问一次，ETag 不变回 304，避免前端刷新拿到旧文件。
+  const cacheControl = 'no-cache';
+  const etag = `"${st.mtimeMs.toString(36)}-${st.size.toString(36)}"`;
+
+  if (etagMatches(req.headers['if-none-match'], etag)) {
+    res.writeHead(304, { ETag: etag, 'Cache-Control': cacheControl, Vary: 'Accept-Encoding' });
     res.end();
     return;
   }
-  res.end(body);
+
+  let body;
+  try {
+    body = await fsp.readFile(file);
+  } catch {
+    sendJson(res, 500, { error: '静态文件读取失败' });
+    return;
+  }
+
+  sendBody(req, res, 200, body, type, {
+    ETag: etag,
+    'Cache-Control': cacheControl,
+  });
 }
 
 // ------------------------------------------------------------------ handler
@@ -760,7 +898,7 @@ const serverHandler = async (req, res) => {
       return await st.handle(req, res, u, p);
     }
     if (p.startsWith('/api/gallery/')) {
-      return await apiGallery(req, res, p.slice('/api/gallery/'.length));
+      return await apiGallery(req, res, p.slice('/api/gallery/'.length), u);
     }
     if (p === '/img') return await handleImg(req, res, u);
     if (p.startsWith('/api/')) {

@@ -3,10 +3,24 @@
   "version": "1.0.0",
   "type": "module",
   "description": "MCP server for e-hentai / exhentai — search, read, download, annotate, with a local library index",
-  "license": "MIT",
-  "engines": { "node": ">=20" },
-  "bin": { "dsh-ehviewer": "./src/index.js" },
-  "main": "./src/index.js",
+  "bin": {
+    "dsh-ehviewer": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "smoke": "node test/smoke.mjs",
+    "test": "node test/run-offline.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.0",
+    "cheerio": "^1.0.0",
+    "undici": "^7.13.0",
+    "socks-proxy-agent": "^8.0.5",
+    "zod": "^4.1.0"
+  },
+  "optionalDependencies": {
+    "sharp": "^0.33.0"
+  },
   "exports": {
     ".": "./src/index.js",
     "./config": "./src/config.js",
@@ -23,17 +37,14 @@
     "./tags": "./src/tags.js",
     "./package.json": "./package.json"
   },
-  "files": ["src", "scripts", "!src/*.md"],
-  "scripts": {
-    "start": "node src/index.js",
-    "smoke": "node test/smoke.mjs",
-    "test": "node test/run-offline.mjs"
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
   },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.17.0",
-    "cheerio": "^1.0.0",
-    "socks-proxy-agent": "^8.0.5",
-    "undici": "^7.13.0",
-    "zod": "^4.1.0"
-  }
+  "main": "./src/index.js",
+  "files": [
+    "src",
+    "scripts",
+    "!src/*.md"
+  ]
 }

@@ -6,6 +6,9 @@
  * 没有软链到本仓库，所以先按包名 import，失败再按同级目录的相对路径兜底。
  */
 
+import zlib from 'node:zlib';
+import { getImage } from './fetch-cache.mjs';
+
 const MCP_SRC = new URL('../../dsh-ehviewer/packages/mcp/src/', import.meta.url);
 const EH_BASE = 'https://e-hentai.org';
 const ALLOWED_THUMB_HOSTS = ['ehgt.org', 'e-hentai.org', 'exhentai.org'];
@@ -37,14 +40,25 @@ async function modules() {
 /* ------------------------------------------------------------------ 通用 */
 
 function sendJson(res, status, body) {
-  const text = JSON.stringify(body);
-  res.writeHead(status, {
+  const buf = Buffer.from(JSON.stringify(body));
+  const req = res.req;
+  const headers = {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
-    'content-length': Buffer.byteLength(text),
-  });
-  if (res.req && res.req.method === 'HEAD') return res.end();
-  res.end(text);
+    'content-length': buf.length,
+  };
+  let out = buf;
+  if (buf.length > 1024) {
+    headers.vary = 'Accept-Encoding';
+    if (req && /\bgzip\b/i.test(String(req.headers['accept-encoding'] || ''))) {
+      out = zlib.gzipSync(buf);
+      headers['content-encoding'] = 'gzip';
+      headers['content-length'] = out.length;
+    }
+  }
+  res.writeHead(status, headers);
+  if (req && req.method === 'HEAD') return res.end();
+  res.end(out);
 }
 
 function fail(res, err, status = 502) {
@@ -147,6 +161,57 @@ async function withClient(fn) {
   }
 }
 
+const TTL_CACHE = new Map();
+const TTL_INFLIGHT = new Map();
+
+function trimTtlCache() {
+  if (TTL_CACHE.size <= 300) return;
+  const rows = [...TTL_CACHE.entries()].sort((a, b) => a[1].at - b[1].at);
+  for (let i = 0; i < rows.length - 240; i += 1) TTL_CACHE.delete(rows[i][0]);
+}
+
+function withOverallTimeout(promise, ms = 20000) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error('上游超时（20s）'), { status: 504 })), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+/**
+ * 站点侧 TTL 缓存 + 同 key 并发合并。
+ * 命中（含等待别人结果）返回 cached:true；打站点的请求返回 cached:false。
+ */
+async function runCached(key, ttlMs, fn) {
+  const hit = TTL_CACHE.get(key);
+  if (hit && Date.now() - hit.at < ttlMs) {
+    return { ...hit.data, cached: true, tookMs: 0 };
+  }
+
+  if (TTL_INFLIGHT.has(key)) {
+    const started = Date.now();
+    const data = await TTL_INFLIGHT.get(key);
+    return { ...data, cached: true, tookMs: Date.now() - started };
+  }
+
+  const started = Date.now();
+  const task = (async () => {
+    const data = await withOverallTimeout(Promise.resolve().then(fn), 20000);
+    TTL_CACHE.set(key, { at: Date.now(), data });
+    trimTtlCache();
+    return data;
+  })();
+  TTL_INFLIGHT.set(key, task);
+  try {
+    const data = await task;
+    return { ...data, cached: false, tookMs: Date.now() - started };
+  } finally {
+    TTL_INFLIGHT.delete(key);
+  }
+}
+
 async function fetchListPage(client, url, base, gallery) {
   const res = await client.get(url, { redirect: true });
   const html = (res && res.text) || '';
@@ -168,7 +233,7 @@ async function fetchListPage(client, url, base, gallery) {
 
 async function apiHome(url) {
   const page = intParam(url.searchParams.get('page'), 0, 0, 500);
-  return withClient(async ({ M, client, base }) => {
+  return runCached(`home|${page}`, 90000, () => withClient(async ({ M, client, base }) => {
     const target = page > 0 ? `${base}/?page=${page}` : `${base}/`;
     const r = await fetchListPage(client, target, base, M.gallery);
     const items = mapItems(r.items, M.gallery.siteFromBase(base));
@@ -177,14 +242,14 @@ async function apiHome(url) {
       hasMore: r.hasMore,
       warnings: cleanWarnings(r.warnings, items.length > 0),
     };
-  });
+  }));
 }
 
 async function apiPopular(url) {
   const periodRaw = String(url.searchParams.get('period') || 'all').toLowerCase();
   const period = ['4h', '1d', '1w', '1m', '1y', 'all'].includes(periodRaw) ? periodRaw : 'all';
   const page = intParam(url.searchParams.get('page'), 0, 0, 200);
-  return withClient(async ({ M, client }) => {
+  return runCached(`popular|${period}|${page}`, 90000, () => withClient(async ({ M, client }) => {
     // toplist 在 exhentai 上 404，统一落到 e-hentai 主机。
     const r = await M.browse.toplists(client, { base: EH_BASE, period, page });
     const warnings = uniq(r.warnings || []);
@@ -215,7 +280,7 @@ async function apiPopular(url) {
       period,
       page,
     };
-  });
+  }));
 }
 
 async function apiFavs(url) {
@@ -223,7 +288,7 @@ async function apiFavs(url) {
   const cat = catRaw === 'all' ? 'all' : String(intParam(catRaw, 0, 0, 9));
   const page = intParam(url.searchParams.get('page'), 0, 0, 500);
   const q = String(url.searchParams.get('q') || '');
-  return withClient(async ({ M, client, base }) => {
+  return runCached(`favs|${cat}|${page}|${q}`, 90000, () => withClient(async ({ M, client, base }) => {
     const r = await M.browse.favorites(client, { base, cat, page, query: q });
     const items = mapItems(r.items, M.gallery.siteFromBase(base));
     return {
@@ -233,10 +298,11 @@ async function apiFavs(url) {
       cat,
       query: q,
     };
-  });
+  }));
 }
 
 async function apiSubs() {
+  const started = Date.now();
   const { store } = await modules();
   const subs = await store.listSubs();
   const items = (Array.isArray(subs) ? subs : []).map((s) => ({
@@ -247,10 +313,11 @@ async function apiSubs() {
     seenCount: Array.isArray(s.seen) ? s.seen.length : 0,
     createdAt: s.createdAt || null,
   }));
-  return { items, total: items.length };
+  return { items, total: items.length, tookMs: Date.now() - started };
 }
 
 async function apiSubsCheck() {
+  const started = Date.now();
   return withClient(async ({ M, cfg, client, base }) => {
     const task = M.subs.checkSubs({
       client,
@@ -289,7 +356,7 @@ async function apiSubsCheck() {
         error: r.error || r.lastError || null,
       };
     });
-    return { results: rows, newItems, totalNew: newItems.length };
+    return { results: rows, newItems, totalNew: newItems.length, tookMs: Date.now() - started };
   });
 }
 
@@ -309,7 +376,7 @@ async function apiSearch(url) {
   }
   if (adv && typeof adv !== 'object') adv = null;
 
-  return withClient(async ({ M, client, base }) => {
+  return runCached(`search|${q}|${page}|${category || ''}|${advRaw || ''}`, 45000, () => withClient(async ({ M, client, base }) => {
     if (!adv) {
       const r = await M.browse.search(client, { base, query: q, page, category: category || null });
       const items = mapItems(r.items, M.gallery.siteFromBase(base));
@@ -339,20 +406,29 @@ async function apiSearch(url) {
       page,
       query: q,
     };
-  });
+  }));
 }
 
 async function apiTags(url) {
-  const { tags } = await modules();
   const q = String(url.searchParams.get('q') || '').trim();
   if (!q) return { items: [] };
-  const items = tags.suggestTags(q, { limit: 20 });
-  return { items: Array.isArray(items) ? items : [] };
+  return runCached(`tags|${q}`, 600000, async () => {
+    const { tags } = await modules();
+    const items = tags.suggestTags(q, { limit: 20 });
+    return { items: Array.isArray(items) ? items : [] };
+  });
 }
 
 function thumbHostAllowed(hostname) {
   const host = String(hostname || '').toLowerCase().replace(/\.$/, '');
   return ALLOWED_THUMB_HOSTS.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+}
+
+function etagMatches(header, etag) {
+  if (!header) return false;
+  return String(header)
+    .split(',')
+    .some((v) => v.trim().replace(/^W\//, '') === etag);
 }
 
 async function apiThumb(req, res, url) {
@@ -372,34 +448,67 @@ async function apiThumb(req, res, url) {
     return sendJson(res, 403, { error: 'host 不在白名单' });
   }
 
-  return withClient(async ({ client, base }) => {
-    const r = await client.getBinary(target.href, {
-      redirect: false,
-      headers: { referer: `${base}/` },
+  const rawW = url.searchParams.get('w');
+  const width = rawW === '0' || rawW === 'none' ? 0 : intParam(rawW, 320, 64, 2000);
+  const want = url.searchParams.get('want') === 'original' ? 'original' : 'webp';
+  const referer = /\.exhentai\.org$/i.test(target.hostname)
+    ? 'https://exhentai.org/'
+    : 'https://e-hentai.org/';
+
+  let out;
+  try {
+    out = await getImage({ url: target.href, referer, width, want });
+  } catch (err) {
+    const status = Number(err && err.status) || 502;
+    if (status === 429) {
+      res.setHeader('Retry-After', '30');
+      return sendJson(res, 429, { error: 'upstream rate limited', hint: '站点限流，30 秒后重试' });
+    }
+    if (status === 504) {
+      return sendJson(res, 504, { error: 'upstream timeout', hint: '上游 15 秒未响应' });
+    }
+    return sendJson(res, status === 400 ? 400 : 502, {
+      error: String((err && err.message) || err || '缩略图拉取失败'),
+      hint: '缩略图代理失败；检查代理与站点登录态',
     });
-    if (!r || !r.buffer || !r.buffer.length) {
-      return sendJson(res, 502, { error: `缩略图拉取失败（status=${r && r.status != null ? r.status : '?'}）` });
+  }
+
+  const etag = `"${out.etag}"`;
+  const headers = {
+    'content-type': out.mime,
+    'cache-control': 'public, max-age=604800, immutable',
+    etag,
+    'x-cache': out.cached ? 'hit' : 'miss',
+    'x-resized': out.resized ? '1' : '0',
+    'x-resize-backend': out.backend || 'none',
+    'x-content-type-options': 'nosniff',
+  };
+
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      /* 客户端断开，静默 */
     }
-    if (r.status && r.status >= 300) {
-      return sendJson(res, 502, { error: `缩略图返回 HTTP ${r.status}` });
-    }
-    const type = String((r.headers && r.headers['content-type']) || 'image/jpeg').toLowerCase();
-    // 只放行位图，避免把远端 HTML/SVG 以自己的源端出去（同源 XSS）。
-    if (!/^image\/(webp|jpeg|jpg|png|gif)\b/.test(type)) {
-      return sendJson(res, 502, { error: `上游不是位图（${type}）` });
-    }
-    res.writeHead(200, {
-      'content-type': type,
-      'content-length': r.buffer.length,
-      'cache-control': 'private, max-age=86400',
-      'x-content-type-options': 'nosniff',
-    });
-    if (req.method === 'HEAD') return res.end();
-    res.end(r.buffer);
   });
+
+  if (etagMatches(req.headers['if-none-match'], etag)) {
+    res.writeHead(304, headers);
+    res.end();
+    return;
+  }
+
+  headers['content-length'] = out.buffer.length;
+  res.writeHead(200, headers);
+  if (req.method === 'HEAD') return res.end();
+  if (res.destroyed) return;
+  try {
+    res.end(out.buffer);
+  } catch {
+    if (!res.destroyed) res.destroy();
+  }
 }
 
 async function apiStatus() {
+  const started = Date.now();
   return withClient(async ({ M, cfg, client }) => {
     const s = await M.auth.status({ cfg, client });
     return {
@@ -409,6 +518,7 @@ async function apiStatus() {
       cookieAgeDays: s && s.cookieAgeDays != null ? s.cookieAgeDays : null,
       ...(s && s.username ? { username: s.username } : {}),
       ...(s && s.needsRelogin ? { needsRelogin: true } : {}),
+      tookMs: Date.now() - started,
     };
   });
 }
@@ -435,7 +545,10 @@ export async function handle(req, res, url, pathname) {
   } catch (err) {
     const status = err && Number(err.status) ? Number(err.status) : 502;
     try {
-      sendJson(res, status, { error: String((err && err.message) || err || '未知错误') });
+      sendJson(res, status, {
+        error: String((err && err.message) || err || '未知错误'),
+        hint: status === 504 ? '上游超时（20s），稍后重试' : '站点请求失败；检查网络/代理/登录态',
+      });
     } catch {
       try {
         res.destroy();

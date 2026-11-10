@@ -53,10 +53,17 @@ function applyTheme(data) {
 function initTheme() {
   const root = document.documentElement;
   const mq = window.matchMedia('(prefers-color-scheme: light)');
-  if (!root.dataset.mode) root.dataset.mode = mq.matches ? 'light' : 'dark';
+  // ?mode=light|dark 强制一套配色（截图 / 调试用，正常浏览不传）
+  const forced = new URLSearchParams(location.search).get('mode');
+  if (forced === 'light' || forced === 'dark') {
+    themeState.forced = true;
+    root.dataset.mode = forced;
+  } else if (!root.dataset.mode) {
+    root.dataset.mode = mq.matches ? 'light' : 'dark';
+  }
 
   const onSchemeChange = (event) => {
-    if (themeState.fromParent) return;
+    if (themeState.fromParent || themeState.forced) return;
     root.dataset.mode = event.matches ? 'light' : 'dark';
   };
   if (typeof mq.addEventListener === 'function') mq.addEventListener('change', onSchemeChange);
@@ -135,19 +142,89 @@ function fmtRel(iso) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
-function imgUrl(file) { return `/img?path=${encodeURIComponent(file)}`; }
-
-function thumbHtml(file, alt) {
-  if (!file) return '<div class="ph">无封面</div>';
-  return `<img src="${esc(imgUrl(file))}" alt="${esc(alt || '')}" loading="lazy">`;
+function imgUrl(file, w) {
+  const base = `/img?path=${encodeURIComponent(file)}`;
+  return w ? `${base}&w=${w}` : base;
 }
 
-async function api(url) {
-  const res = await fetch(url, { headers: { accept: 'application/json' } });
-  let data = null;
-  try { data = await res.json(); } catch { data = null; }
-  if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
-  return data;
+/* 所有 <img> 统一带这几样：异步解码、不带 referer、交给全局 load/error 钩子管骨架和兜底。 */
+const IMG_ATTRS = 'decoding="async" referrerpolicy="no-referrer" data-eh-img';
+
+function imgTag(src, alt, opts = {}) {
+  const eager = opts.eager === true;
+  return `<img src="${esc(src)}" alt="${esc(alt || '')}" ${IMG_ATTRS}`
+    + ` loading="${eager ? 'eager' : 'lazy'}"`
+    + (eager ? ' fetchpriority="high"' : '')
+    + (opts.cls ? ` class="${esc(opts.cls)}"` : '')
+    + '>';
+}
+
+function thumbHtml(file, alt, opts = {}) {
+  if (!file) return '<div class="ph">无封面</div>';
+  return imgTag(imgUrl(file, 400), alt, opts);
+}
+
+/* 路由级取消：切页时 abort 掉上一页还在飞的请求，旧响应不会盖新页面。 */
+let routeAbort = new AbortController();
+let pendingApi = 0;
+
+function slowHint(on) {
+  let el = document.getElementById('eh-slow');
+  if (!on) {
+    if (el) el.remove();
+    return;
+  }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'eh-slow';
+    el.className = 'slow-hint';
+    el.textContent = '还在加载…（超过 8 秒了，网络有点慢）';
+    document.body.appendChild(el);
+  }
+}
+
+async function api(url, options = {}) {
+  // detached：不跟着路由取消（侧栏统计这种全局请求用）
+  const outer = options.detached ? new AbortController().signal : (options.signal || routeAbort.signal);
+  const ctl = new AbortController();
+  let timedOut = false;
+  const onOuterAbort = () => ctl.abort();
+  if (outer.aborted) ctl.abort();
+  else outer.addEventListener('abort', onOuterAbort, { once: true });
+
+  pendingApi += 1;
+  const slowTimer = setTimeout(() => slowHint(true), 8000);
+  const killTimer = setTimeout(() => {
+    timedOut = true;
+    ctl.abort();
+  }, 20000);
+
+  try {
+    const res = await fetch(url, { headers: { accept: 'application/json' }, signal: ctl.signal });
+    let data = null;
+    try { data = await res.json(); } catch { data = null; }
+    if (!res.ok) {
+      const err = new Error((data && (data.error || data.detail)) || `HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+    return data;
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      const e = new Error(timedOut ? '请求超时（20 秒），点重试再拉一次' : '请求已取消');
+      e.aborted = true;
+      e.timeout = timedOut;
+      e.status = 0;
+      throw e;
+    }
+    throw err;
+  } finally {
+    clearTimeout(slowTimer);
+    clearTimeout(killTimer);
+    try { outer.removeEventListener('abort', onOuterAbort); } catch { /* ignore */ }
+    pendingApi -= 1;
+    if (pendingApi <= 0) slowHint(false);
+  }
 }
 
 let toastTimer = 0;
@@ -177,9 +254,127 @@ async function copyText(text) {
   toast(ok ? '已复制' : '复制失败');
 }
 
+/* ------------------------------------------------------------- img runtime */
+
+/** 全局图片钩子：加载成功淡入、失败换成可点重试的占位块。一个监听管全站。 */
+function installImgRuntime() {
+  document.addEventListener('load', (event) => {
+    const img = event.target;
+    if (!img || img.tagName !== 'IMG') return;
+    img.classList.add('img-ok');
+  }, true);
+
+  document.addEventListener('error', (event) => {
+    const img = event.target;
+    if (!img || img.tagName !== 'IMG' || !img.hasAttribute('data-eh-img')) return;
+    const src = img.getAttribute('src') || '';
+    const box = document.createElement('div');
+    box.className = 'img-fail';
+    box.setAttribute('role', 'button');
+    box.tabIndex = 0;
+    box.title = '点击重试';
+    box.textContent = '加载失败';
+    box.dataset.retrySrc = src;
+    img.replaceWith(box);
+  }, true);
+
+  document.addEventListener('click', (event) => {
+    const box = event.target.closest && event.target.closest('.img-fail');
+    if (!box) return;
+    event.preventDefault();
+    event.stopPropagation();
+    retryImage(box);
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const box = event.target.closest && event.target.closest('.img-fail');
+    if (!box) return;
+    event.preventDefault();
+    event.stopPropagation();
+    retryImage(box);
+  });
+}
+
+function retryImage(box) {
+  const src = box.dataset.retrySrc;
+  if (!src) return;
+  let next = src;
+  try {
+    const url = new URL(src, location.origin);
+    url.searchParams.set('r', String(Date.now()));
+    next = url.pathname + url.search;
+  } catch { /* 保持原样 */ }
+  const img = document.createElement('img');
+  img.setAttribute('data-eh-img', '');
+  img.setAttribute('decoding', 'async');
+  img.setAttribute('referrerpolicy', 'no-referrer');
+  img.loading = 'eager';
+  img.className = 'img-retry';
+  img.alt = '';
+  img.src = next;
+  box.replaceWith(img);
+}
+
+/* ------------------------------------------------------------ scroll memory */
+
+const scrollMem = new Map();
+function scrollKey() { return location.pathname + location.search; }
+function rememberScroll() {
+  try { scrollMem.set(scrollKey(), app.scrollTop || 0); } catch { /* ignore */ }
+}
+
+/* --------------------------------------------------------------- auto grow */
+
+/** 哨兵进入视口前 600px 就触发一次；busy 挡重复请求。 */
+function autoMore(node, run, margin = '600px') {
+  if (!node || typeof IntersectionObserver !== 'function') return null;
+  let busy = false;
+  let dead = false;
+  const io = new IntersectionObserver((entries) => {
+    if (dead || busy) return;
+    if (!entries.some((entry) => entry.isIntersecting)) return;
+    busy = true;
+    Promise.resolve(run())
+      .catch(() => {})
+      .finally(() => { busy = false; });
+  }, { root: app, rootMargin: `${margin} 0px 0px 0px` });
+  io.observe(node);
+  return {
+    stop() { dead = true; try { io.disconnect(); } catch { /* ignore */ } },
+  };
+}
+
+/* ---------------------------------------------------------------- keyboard */
+
+let kbIndex = -1;
+
+function isTyping(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable === true;
+}
+
+function listRows() {
+  return [...document.querySelectorAll('#app .b-card, #app .tl-item, #app tr[data-href]')]
+    .filter((el) => el.offsetParent !== null);
+}
+
+function moveFocus(dir) {
+  const rows = listRows();
+  if (!rows.length) return;
+  kbIndex = Math.min(Math.max(0, (kbIndex < 0 ? -1 : kbIndex) + dir), rows.length - 1);
+  rows.forEach((el) => el.classList.remove('kb-focus'));
+  const el = rows[kbIndex];
+  if (!el) return;
+  el.classList.add('kb-focus');
+  el.scrollIntoView({ block: 'nearest' });
+}
+
 /* ----------------------------------------------------------------- router */
 
 function navigate(href) {
+  rememberScroll();
   const url = new URL(href, location.origin);
   if (state.q && !url.pathname.startsWith('/g/') && !url.searchParams.has('q')) {
     url.searchParams.set('q', state.q);
@@ -292,10 +487,10 @@ function emptyState(title, desc, hint) {
 
 async function loadStatus() {
   try {
-    const s = await api('/api/summary');
+    const s = await api('/api/summary', { detached: true });
     statusEl.innerHTML = `看过 ${s.counts.view} · 下载 ${s.counts.download}<br>笔记 ${s.counts.notes} · 本地库 ${s.counts.library}`;
-  } catch {
-    statusEl.textContent = '数据读取失败';
+  } catch (err) {
+    statusEl.textContent = `数据读取失败：${err && err.message ? err.message : err}`;
   }
 }
 
@@ -332,7 +527,9 @@ async function renderView(my) {
     const btn = document.createElement('button');
     btn.className = 'btn';
     btn.textContent = '加载更多';
+    let moreCtl = null;
     btn.onclick = async () => {
+      if (btn.disabled) return;
       btn.disabled = true;
       btn.textContent = '加载中…';
       try {
@@ -341,15 +538,22 @@ async function renderView(my) {
         loaded = loaded.concat(next.items);
         paint();
         offset += next.items.length;
-        if (!next.hasMore) moreWrap.remove();
-        else { btn.disabled = false; btn.textContent = '加载更多'; }
+        if (!next.hasMore) {
+          if (moreCtl) moreCtl.stop();
+          moreWrap.remove();
+        } else {
+          btn.disabled = false;
+          btn.textContent = '加载更多';
+        }
       } catch (err) {
+        if (my !== seq) return;
         btn.disabled = false;
-        btn.textContent = '加载更多';
-        toast('加载失败');
+        btn.textContent = '重试';
+        toast(err && err.timeout ? '加载超时，点重试' : '加载失败');
       }
     };
     moreWrap.appendChild(btn);
+    moreCtl = autoMore(moreWrap, () => btn.click());
   }
 }
 
@@ -533,8 +737,8 @@ function browseStatusHtml(s) {
   return `${who}${s.site ? ` · ${s.site}` : ''}${age}`;
 }
 
-function browseThumb(raw) {
-  return `/api/browse/thumb?u=${encodeURIComponent(raw)}`;
+function browseThumb(raw, w) {
+  return `/api/browse/thumb?u=${encodeURIComponent(raw)}${w ? `&w=${w}` : ''}`;
 }
 
 const BROWSE_CAT_SITE = {
@@ -563,11 +767,11 @@ function browseCategoryBadge(value) {
   return `<span class="b-cat ${cls}"${hint ? ` title="${esc(hint)}"` : ''}>${esc(display)}</span>`;
 }
 
-function browseCardHtml(it) {
+function browseCardHtml(it, index) {
   const gid = String(it.gid);
   const title = it.title || `gid ${gid}`;
   const cover = it.thumb
-    ? `<img src="${esc(browseThumb(it.thumb))}" alt="" loading="lazy">`
+    ? imgTag(browseThumb(it.thumb, 320), '', { eager: index < 6 })
     : '<div class="b-ph">无封面</div>';
   const badge = browseCategoryBadge(it.category);
   const meta = [
@@ -579,7 +783,8 @@ function browseCardHtml(it) {
   const read = it.token
     ? `<button class="b-read" type="button" data-readto="/read/${encodeURIComponent(gid)}/${encodeURIComponent(it.token)}">阅读</button>`
     : '';
-  return `<div class="b-card" data-gid="${esc(gid)}">
+  const href = it.token ? `/g/${encodeURIComponent(gid)}?t=${encodeURIComponent(it.token)}` : `/g/${encodeURIComponent(gid)}`;
+  return `<div class="b-card" data-gid="${esc(gid)}" data-href="${esc(href)}">
     <div class="b-cover">${cover}</div>
     <div class="b-body">
       <div class="b-title">${esc(title)}</div>
@@ -664,8 +869,11 @@ function browseFavTabs(current) {
 
 async function browseHome(my) {
   setBrowseCrumb('home');
-  const [status, data] = await Promise.all([getBrowseStatus(), api('/api/browse/home?page=0')]);
+  const [statusRes, dataRes] = await Promise.allSettled([getBrowseStatus(), api('/api/browse/home?page=0')]);
+  if (dataRes.status === 'rejected') throw dataRes.reason;
   if (my !== seq) return;
+  const status = statusRes.status === 'fulfilled' ? statusRes.value : null;
+  const data = dataRes.value;
   const items = Array.isArray(data.items) ? data.items : [];
   app.innerHTML = `<div class="wrap">
     <div class="b-head"><h1>主页</h1><span class="b-status">${esc(browseStatusHtml(status))}</span></div>
@@ -683,11 +891,14 @@ async function browsePopular(my) {
   setBrowseCrumb('popular');
   const params = new URLSearchParams(location.search);
   const period = BROWSE_PERIODS.includes(params.get('period')) ? params.get('period') : 'all';
-  const [status, data] = await Promise.all([
+  const [statusRes, dataRes] = await Promise.allSettled([
     getBrowseStatus(),
     api(`/api/browse/popular?period=${encodeURIComponent(period)}&page=0`),
   ]);
+  if (dataRes.status === 'rejected') throw dataRes.reason;
   if (my !== seq) return;
+  const status = statusRes.status === 'fulfilled' ? statusRes.value : null;
+  const data = dataRes.value;
   const items = Array.isArray(data.items) ? data.items : [];
   app.innerHTML = `<div class="wrap">
     <div class="b-head"><h1>热门</h1><span class="b-status">${esc(browseStatusHtml(status))}</span></div>
@@ -711,11 +922,14 @@ async function browseFavs(my) {
   let cat = params.get('cat') || '0';
   if (!/^\d$/.test(cat)) cat = '0';
   const q = (params.get('q') || '').trim();
-  const [status, data] = await Promise.all([
+  const [statusRes, dataRes] = await Promise.allSettled([
     getBrowseStatus(),
     api(`/api/browse/favs?cat=${encodeURIComponent(cat)}&page=0&q=${encodeURIComponent(q)}`),
   ]);
+  if (dataRes.status === 'rejected') throw dataRes.reason;
   if (my !== seq) return;
+  const status = statusRes.status === 'fulfilled' ? statusRes.value : null;
+  const data = dataRes.value;
   const items = Array.isArray(data.items) ? data.items : [];
   app.innerHTML = `<div class="wrap">
     <div class="b-head"><h1>收藏</h1><span class="b-status">${esc(browseStatusHtml(status))}</span></div>
@@ -765,8 +979,11 @@ function subsMetaLine(s) {
 
 async function browseSubs(my) {
   setBrowseCrumb('subs');
-  const [status, data] = await Promise.all([getBrowseStatus(), api('/api/browse/subs')]);
+  const [statusRes, dataRes] = await Promise.allSettled([getBrowseStatus(), api('/api/browse/subs')]);
+  if (dataRes.status === 'rejected') throw dataRes.reason;
   if (my !== seq) return;
+  const status = statusRes.status === 'fulfilled' ? statusRes.value : null;
+  const data = dataRes.value;
   const items = Array.isArray(data.items) ? data.items : [];
   const rows = items.map((s) => `<div class="sub-row" data-sub-id="${esc(s.id)}">
       <div class="sub-main">
@@ -870,7 +1087,7 @@ async function browseSearch(my) {
   const sort = params.get('sort') || 'default';
   const active = Boolean(q || cats.length || Object.keys(adv).length);
 
-  const [status, data] = await Promise.all([
+  const [statusRes, dataRes] = await Promise.allSettled([
     getBrowseStatus(),
     active
       ? api(
@@ -880,7 +1097,10 @@ async function browseSearch(my) {
         )
       : Promise.resolve({ items: [], hasMore: false, warnings: [] }),
   ]);
+  if (dataRes.status === 'rejected') throw dataRes.reason;
   if (my !== seq) return;
+  const status = statusRes.status === 'fulfilled' ? statusRes.value : null;
+  const data = dataRes.value;
 
   const catChecks = BROWSE_CATS.map(([name, label]) => (
     `<label class="b-catcheck"><input type="checkbox" name="${name}" value="${name}"${cats.includes(name) ? ' checked' : ''}> ${label}</label>`
@@ -972,12 +1192,15 @@ async function browseSearch(my) {
         if (page > 0) u.searchParams.set('page', String(page));
         history.replaceState(null, '', u);
       } catch (err) {
+        if (my !== seq) return;
         page -= 1;
         moreBtn.disabled = false;
-        moreBtn.textContent = '加载更多';
+        moreBtn.textContent = '重试';
         toast(`加载失败：${err && err.message ? err.message : err}`);
       }
     };
+    const moreWrap = document.getElementById('b-more');
+    autoMore(moreWrap, () => moreBtn.click());
   }
 }
 
@@ -992,7 +1215,9 @@ async function renderBrowse(my, kind) {
 }
 
 async function renderGallery(my, gid) {
-  const data = await api(`/api/gallery/${encodeURIComponent(gid)}`);
+  const qToken = new URLSearchParams(location.search).get('t') || '';
+  const data = await api(`/api/gallery/${encodeURIComponent(gid)}${qToken ? `?token=${encodeURIComponent(qToken)}` : ''}`);
+  if (!data.token && qToken) data.token = qToken;
   if (my !== seq) return;
 
   const title = data.title || `gid ${gid}`;
@@ -1056,14 +1281,14 @@ async function renderGallery(my, gid) {
 
   const localPanel = local
     ? `<div class="section"><h2>本地文件</h2><div class="panel section-body">
-        <div class="gallery">${local.files.map((f, i) => `<button class="page-tile" data-readto="${esc(readBase)}?n=${i + 1}" title="第 ${i + 1} 页"><img src="${esc(imgUrl(f))}" alt="第 ${i + 1} 页" loading="lazy"></button>`).join('')}</div>
+        <div class="gallery">${local.files.map((f, i) => `<button class="page-tile" data-readto="${esc(readBase)}?n=${i + 1}" title="第 ${i + 1} 页">${imgTag(imgUrl(f, 400), `第 ${i + 1} 页`, { eager: i < 6 })}</button>`).join('')}</div>
       </div></div>`
     : `<div class="section"><h2>本地文件</h2><div class="panel section-body meta">本地没有这本的文件。</div></div>`;
 
   const onlinePanel = !local && data.token
     ? `<div class="section"><h2>在线阅读</h2><div class="panel section-body">
         ${onlinePreview && onlinePreview.items.length
-          ? `<div class="gallery">${onlinePreview.items.map((it) => `<button class="page-tile" data-readto="${esc(readBase)}?n=${it.index}" title="第 ${it.index} 页"><img src="/api/online/img/${encodeURIComponent(String(data.gid))}/${encodeURIComponent(data.token)}/${it.index}" alt="第 ${it.index} 页" loading="lazy"></button>`).join('')}</div>`
+          ? `<div class="gallery">${onlinePreview.items.map((it, i) => `<button class="page-tile" data-readto="${esc(readBase)}?n=${it.index}" title="第 ${it.index} 页">${imgTag(`/api/online/img/${encodeURIComponent(String(data.gid))}/${encodeURIComponent(data.token)}/${it.index}`, `第 ${it.index} 页`, { eager: i < 6 })}</button>`).join('')}</div>`
           : '<div class="meta">在线页面暂时拿不到，点下面的按钮进阅读器再试。</div>'}
         <div class="detail-actions"><button class="btn" data-readto="${esc(readBase)}?n=1">在线阅读</button><span class="detail-note">图片经本地服务代理，不跳浏览器。</span></div>
       </div></div>`
@@ -1146,10 +1371,20 @@ async function renderReader(my, gid, token) {
     gallery && gallery.local && Array.isArray(gallery.local.files) ? gallery.local.files : [];
   const source = localFiles.length ? 'local' : 'online';
 
-  if (source === 'online' && !token) {
-    readerFail('缺少 token，没法在线读这本。');
+  let tok = token;
+  if (source === 'online' && !tok) {
+    // 从 /g/<gid> 进来可能没带 token：问一次详情，能拿到就继续
+    try {
+      const g = await api(`/api/gallery/${encodeURIComponent(gid)}`);
+      if (my !== seq) return;
+      if (g && g.token) tok = g.token;
+    } catch { /* 下面统一报错 */ }
+  }
+  if (source === 'online' && !tok) {
+    readerFail('这本书没有 token，在线读不了。从搜索结果或收藏里点「阅读」进，或者先让 agent 用 eh_gallery 打开一次。');
     return;
   }
+  token = tok;
 
   let firstWindow = null;
   if (source === 'online') {
@@ -1288,11 +1523,14 @@ async function renderReader(my, gid, token) {
       const from = onlineWindowFrom(state.index);
       const nextFrom = from + 20;
       if (nextFrom <= state.total) loadOnlineWindow(state, nextFrom).catch(() => {});
-      for (const i of [state.index + 1, state.index + 2]) {
-        if (i <= state.total && state.loaded.has(i)) {
-          const pre = new Image();
-          pre.src = readerSrc(state, i);
-        }
+      state.prefetched = state.prefetched || new Set();
+      let budget = 5;
+      for (let i = state.index + 1; i <= state.total && budget > 0; i += 1) {
+        if (!state.loaded.has(i) || state.prefetched.has(i)) continue;
+        state.prefetched.add(i);
+        budget -= 1;
+        const pre = new Image();
+        pre.src = readerSrc(state, i);
       }
     }
   };
@@ -1356,6 +1594,10 @@ async function renderReader(my, gid, token) {
 
 async function render() {
   const my = ++seq;
+  try { routeAbort.abort(); } catch { /* ignore */ }
+  routeAbort = new AbortController();
+  kbIndex = -1;
+  const restoreY = scrollMem.get(scrollKey()) || 0;
   const route = parseRoute();
   state.route = route;
   state.q = new URLSearchParams(location.search).get('q') || '';
@@ -1392,11 +1634,25 @@ async function render() {
       else app.innerHTML = '<div class="empty">设置模块没加载</div>';
     }
     else await renderView(my);
+    if (my === seq && !window.__ehFirstList) {
+      window.__ehFirstList = performance.now();
+      updatePerfBadge();
+    }
   } catch (err) {
-    if (my !== seq) return;
-    app.innerHTML = `<div class="wrap"><div class="error">出错了：${esc(err && err.message ? err.message : err)}<br><button class="btn" id="retry">重试</button></div></div>`;
+    if (my !== seq || (err && err.aborted)) return;
+    const detail = err && err.message ? err.message : String(err);
+    app.innerHTML = `<div class="wrap"><div class="error">出错了：${esc(detail)}<br>`
+      + '<button class="btn" id="retry">重试</button></div></div>';
     const retry = document.getElementById('retry');
     if (retry) retry.onclick = () => render();
+  } finally {
+    if (my === seq) {
+      app.scrollTop = restoreY;
+      // 兜底：极少数缓存命中时 load 事件可能早于监听落地，这里补扫一遍
+      document.querySelectorAll('img[data-eh-img]').forEach((img) => {
+        if (img.complete && img.naturalWidth) img.classList.add('img-ok');
+      });
+    }
   }
 }
 
@@ -1461,13 +1717,46 @@ document.addEventListener('click', (e) => {
     return;
   }
   const row = e.target.closest('tr[data-href]');
-  if (row) navigate(row.getAttribute('data-href'));
+  if (row) {
+    navigate(row.getAttribute('data-href'));
+    return;
+  }
+  const card = e.target.closest('.b-card[data-href]');
+  if (card && !e.target.closest('button, a, [data-readto], [data-copy]')) {
+    navigate(card.getAttribute('data-href'));
+  }
 });
 
-window.addEventListener('popstate', render);
+window.addEventListener('popstate', () => {
+  rememberScroll();
+  render();
+});
 
 window.addEventListener('keydown', (e) => {
-  if (!activeReader || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (e.altKey || e.ctrlKey || e.metaKey) return;
+  if (!activeReader && !isTyping(e.target)) {
+    if (e.key === '/') {
+      e.preventDefault();
+      qEl.focus();
+      qEl.select();
+      return;
+    }
+    if (e.key === 'j' || e.key === 'k') {
+      e.preventDefault();
+      moveFocus(e.key === 'j' ? 1 : -1);
+      return;
+    }
+    if (e.key === 'Enter' && kbIndex >= 0) {
+      const rows = listRows();
+      const el = rows[kbIndex];
+      if (el) {
+        e.preventDefault();
+        el.click();
+        return;
+      }
+    }
+  }
+  if (!activeReader) return;
   const key = e.key;
   if (key === 'ArrowLeft') {
     e.preventDefault();
@@ -1487,6 +1776,48 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
+/* 性能埋点：?perf=1 时左下角显示 ttfb / dcl / load / 首屏列表完成时刻（验收用）。 */
+const perfState = { nav: null };
+
+function updatePerfBadge() {
+  if (!new URLSearchParams(location.search).has('perf')) return;
+  let badge = document.getElementById('eh-perf');
+  if (!badge) {
+    badge = document.createElement('div');
+    badge.id = 'eh-perf';
+    badge.style.cssText = 'position:fixed;left:6px;bottom:6px;z-index:9999;font:11px/1.4 ui-monospace,monospace;'
+      + 'background:#000c;color:#7dff9b;padding:3px 7px;border-radius:5px;pointer-events:none';
+    document.body.appendChild(badge);
+  }
+  const nav = perfState.nav;
+  const parts = [];
+  if (nav) {
+    parts.push(`ttfb=${Math.round(nav.responseStart)}`, `dom=${Math.round(nav.domInteractive)}`,
+      `dcl=${Math.round(nav.domContentLoadedEventEnd)}`, `load=${Math.round(nav.loadEventEnd)}`);
+    const fcp = performance.getEntriesByName('first-contentful-paint')[0];
+    if (fcp) parts.push(`fcp=${Math.round(fcp.startTime)}`);
+  }
+  if (window.__ehFirstList) parts.push(`list=${Math.round(window.__ehFirstList)}`);
+  badge.textContent = parts.join(' ');
+}
+
+(function installPerfLog() {
+  window.addEventListener('load', () => {
+    setTimeout(() => {
+      try {
+        perfState.nav = performance.getEntriesByType('navigation')[0] || null;
+        if (perfState.nav) {
+          console.info('[perf] ' + [perfState.nav.responseStart, perfState.nav.domInteractive,
+            perfState.nav.domContentLoadedEventEnd, perfState.nav.loadEventEnd].map((v) => Math.round(v)).join('/'));
+        }
+        updatePerfBadge();
+      } catch { /* 忽略 */ }
+    }, 80);
+  });
+})();
+
+if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+installImgRuntime();
 initTheme();
 loadStatus();
 render();
